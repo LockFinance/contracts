@@ -1,0 +1,34 @@
+{
+  "name": "lock",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "devDependencies": {
+    "bignumber.js": "^7.2.1",
+    "chai": "^4.2.0",
+    "coveralls": "^3.0.2",
+    "dotenv": "^6.2.0",
+    "ethlint": "^1.2.3",
+    "ganache-cli": "^6.1.4",
+    "ganache-cli-coverage": "github:Agusx1211/ganache-cli#c462b3fc48fe9b16756f7799885c0741114d9ed3",
+    "husky": "^1.1.0",
+    "lodash": "^4.17.10",
+    "openzeppelin-solidity": "2.4",
+    "openzeppelin-test-helpers": "0.3.2",
+    "solidity-coverage": "github:rotcivegaf/solidity-coverage#5875f5b7bc74d447f3312c9c0e9fc7814b482477",
+    "truffle": "5.0.30",
+    "truffle-hdwallet-provider": "^1.0.14",
+    "web3": "^1.2.1"
+  },
+  "scripts": {
+    "test": "scripts/test.sh",
+    "compile": "truffle compile",
+    "migrate": "truffle migrate",
+    "networks": "truffle networks",
+    "coverage": "scripts/coverage.sh",
+    "lint:sol": "solium -d .",
+    "lint:sol:fix": "solium -d . --fix"
+  },
+  "author": "Ginete Technologies",
+  "license": "ISC"
+}
