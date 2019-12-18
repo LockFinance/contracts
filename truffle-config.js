@@ -18,11 +18,18 @@ module.exports = {
       gas: 6000000,
       gasPrice: 40000000000
     },
+    mainnet: {
+      provider: () => new HDWalletProvider(process.env.PK, "https://mainnet.infura.io/v3/" + process.env.INFURA_API_KEY),
+      port: 8545,
+      network_id: "1",
+      gas: 6000000,
+      gasPrice: 11000000000
+    },
     ropsten: {
       provider: () => new HDWalletProvider(process.env.PK, "https://ropsten.infura.io/v3/" + process.env.INFURA_API_KEY),
       port: 8545,
       network_id: "3",
-      gas: 6000000,
+      gas: 7000000,
       gasPrice: 40000000000
     },
     rinkebyLocal: {

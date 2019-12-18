@@ -265,12 +265,13 @@ contract Lock is Ownable {
 
         require(start.add(length) <= _tokens.length, "Lock: Invalid input");
         require(length > 0 && length <= 15, "Lock: Invalid length");
-
+        uint256 count = 0;
         for(uint256 i = start; i < start.add(length); i++) {
-            tokenAddresses[i] = _tokens[i].tokenAddress;
-            minAmounts[i] = _tokens[i].minAmount;
-            emergencyUnlocks[i] = _tokens[i].emergencyUnlock;
-            statuses[i] = _tokens[i].status;
+            tokenAddresses[count] = _tokens[i].tokenAddress;
+            minAmounts[count] = _tokens[i].minAmount;
+            emergencyUnlocks[count] = _tokens[i].emergencyUnlock;
+            statuses[count] = _tokens[i].status;
+            count = count.add(1);
         }
 
         return(

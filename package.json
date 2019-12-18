@@ -18,7 +18,7 @@
     "solidity-coverage": "github:rotcivegaf/solidity-coverage#5875f5b7bc74d447f3312c9c0e9fc7814b482477",
     "truffle": "5.0.30",
     "truffle-hdwallet-provider": "^1.0.14",
-    "web3": "^1.2.1"
+    "web3": "^1.2.4"
   },
   "scripts": {
     "test": "scripts/test.sh",

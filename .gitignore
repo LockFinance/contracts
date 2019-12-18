@@ -3,7 +3,7 @@ coverage/
 coverage.json
 .env
 build/
-
+flattened_contracts/
 # IDEs and editors
 /.idea
 .project
