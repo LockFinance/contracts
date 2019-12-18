@@ -13,7 +13,7 @@ npm install -g truffle
 Clone Lock-SmartContracts
 
 ```sh
-git clone https://github.com/sameepsi/lock.git
+git clone https://github.com/LockFinance/contracts.git
 cd lock/smart-contracts
 npm i
 ```
