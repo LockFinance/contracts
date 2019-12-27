@@ -109,7 +109,19 @@ contract Lock is Ownable {
     event AirdropAdded(
         address indexed baseToken,
         address indexed destToken,
-        uint256 airdropDate
+        uint256 index,
+        uint256 airdropDate,
+        uint256 numerator,
+        uint256 denominator
+    );
+
+    event AirdropUpdated(
+        address indexed baseToken,
+        address indexed destToken,
+        uint256 index,
+        uint256 airdropDate,
+        uint256 numerator,
+        uint256 denominator
     );
 
     event TokensAirdropped(
@@ -360,7 +372,7 @@ contract Lock is Ownable {
         uint256[] memory denominators,
         uint256[] memory dates
     )
-    {   
+    {
         uint256 length = _baseTokenVsAirdrops[token].length;
 
         destTokens = new address[](length);
@@ -384,6 +396,26 @@ contract Lock is Ownable {
             numerators,
             denominators,
             dates
+        );
+    }
+
+    /**
+    * @dev Returns specific airdrop for a base token
+    * @param token Base token address
+    * @param index Index at which this airdrop is in array
+    */
+    function getAirdrop(address token, uint256 index) external view returns(
+        address destToken,
+        uint256 numerator,
+        uint256 denominator,
+        uint256 date
+    )
+    {
+        return (
+            _baseTokenVsAirdrops[token][index].destToken,
+            _baseTokenVsAirdrops[token][index].numerator,
+            _baseTokenVsAirdrops[token][index].denominator,
+            _baseTokenVsAirdrops[token][index].date
         );
     }
 
@@ -437,7 +469,10 @@ contract Lock is Ownable {
         emit AirdropAdded(
             baseToken,
             destToken,
-            date
+            _baseTokenVsAirdrops[baseToken].length.sub(1),
+            date,
+            numerator,
+            denominator
         );
     }
 
@@ -470,6 +505,15 @@ contract Lock is Ownable {
         airdrop.numerator = numerator;
         airdrop.denominator = denominator;
         airdrop.date = date;
+
+        emit AirdropUpdated(
+            baseToken,
+            airdrop.destToken,
+            index,
+            date,
+            numerator,
+            denominator
+        );
     }
 
 
