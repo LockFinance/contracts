@@ -774,6 +774,8 @@ contract Lock is Ownable {
     {
 
         //Transferring fee to the wallet
+        require(msg.value == amount.add(fee), "Lock: Enough ETH not sent!!");
+
         (bool success,) = _wallet.call.value(fee)("");
         require(success, "Lock: Transfer of fee failed");
 
@@ -871,10 +873,7 @@ contract Lock is Ownable {
 
             Airdrop memory airdrop = _baseTokenVsAirdrops[baseToken][i];
 
-            if(airdrop.date < lockDate || airdrop.date > block.timestamp) {
-                return;
-            }
-            else {
+            if(airdrop.date > lockDate && airdrop.date < block.timestamp) {
                 uint256 airdropAmount = amount.mul(airdrop.numerator).div(airdrop.denominator);
                 IERC20(airdrop.destToken).safeTransfer(msg.sender, airdropAmount);
                 emit TokensAirdropped(airdrop.destToken, airdropAmount);
