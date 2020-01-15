@@ -658,50 +658,53 @@ contract Lock is Ownable {
         whenNotPaused
         canLockAsset(tokenAddress)
     {
-        require(
-            beneficiary != address(0),
-            "Lock: Provide valid beneficiary address!!"
-        );
-
-        Token memory token = _tokens[_tokenVsIndex[tokenAddress].sub(1)];
-
-        require(
-            amount >= token.minAmount,
-            "Lock: Please provide minimum amount of tokens!!"
-        );
-
-        uint256 endDate = block.timestamp.add(duration);
-        uint256 fee = amount.mul(_fee).div(10000);
-        uint256 newAmount = amount.sub(fee);
-
-        if(ETH_ADDRESS == tokenAddress) {
-            _lockETH(
-                newAmount,
-                fee,
-                endDate,
-                beneficiary
-            );
-        }
-
-        else {
-            _lockERC20(
-                tokenAddress,
-                newAmount,
-                fee,
-                endDate,
-                beneficiary
-            );
-        }
-
-        emit AssetLocked(
+        uint256 remValue = _lock(
             tokenAddress,
-            msg.sender,
+            amount,
+            duration,
             beneficiary,
-            _lockId,
-            newAmount,
-            block.timestamp,
-            endDate
+            msg.value
         );
+
+        require(remValue == 0, "Lock: Sent more ethers then required");
+
+    }
+
+    /**
+    * @dev Allows user to lock asset. In case of ERC-20 token the user will
+    * first have to approve the contract to spend on his/her behalf
+    * @param tokenAddress Address of the token to be locked
+    * @param amounts List of amount of tokens to lock
+    * @param durations List of duration for which tokens to be locked. In seconds
+    * @param beneficiaries List of addresses of the beneficiaries
+    */
+    function bulkLock(
+        address tokenAddress,
+        uint256[] calldata amounts,
+        uint256[] calldata durations,
+        address payable[] calldata beneficiaries
+    )
+        external
+        payable
+        whenNotPaused
+        canLockAsset(tokenAddress)
+    {
+        uint256 remValue = msg.value;
+        require(amounts.length == durations.length, "Lock: Invalid input");
+        require(amounts.length == beneficiaries.length, "Lock: Invalid input");
+
+        for(uint256 i = 0; i < amounts.length; i++){
+            remValue = _lock(
+                tokenAddress,
+                amounts[i],
+                durations[i],
+                beneficiaries[i],
+                remValue
+            );
+        }
+
+        require(remValue == 0, "Lock: Sent more ethers then required");
+
     }
 
     /**
@@ -762,19 +765,85 @@ contract Lock is Ownable {
     }
 
     /**
+    * @dev Helper method to lock asset
+    */
+    function _lock(
+        address tokenAddress,
+        uint256 amount,
+        uint256 duration,
+        address payable beneficiary,
+        uint256 value
+    )
+        private
+        returns(uint256)
+    {
+        require(
+            beneficiary != address(0),
+            "Lock: Provide valid beneficiary address!!"
+        );
+
+        Token memory token = _tokens[_tokenVsIndex[tokenAddress].sub(1)];
+
+        require(
+            amount >= token.minAmount,
+            "Lock: Please provide minimum amount of tokens!!"
+        );
+
+        uint256 endDate = block.timestamp.add(duration);
+        uint256 fee = amount.mul(_fee).div(10000);
+        uint256 newAmount = amount.sub(fee);
+        uint256 remValue = value;
+
+        if(ETH_ADDRESS == tokenAddress) {
+            _lockETH(
+                newAmount,
+                fee,
+                endDate,
+                beneficiary,
+                value
+            );
+
+            remValue = remValue.sub(amount);
+        }
+
+        else {
+            _lockERC20(
+                tokenAddress,
+                newAmount,
+                fee,
+                endDate,
+                beneficiary
+            );
+        }
+
+        emit AssetLocked(
+            tokenAddress,
+            msg.sender,
+            beneficiary,
+            _lockId,
+            newAmount,
+            block.timestamp,
+            endDate
+        );
+
+        return remValue;
+    }
+
+    /**
     * @dev Helper method to lock ETH
     */
     function _lockETH(
         uint256 amount,
         uint256 fee,
         uint256 endDate,
-        address payable beneficiary
+        address payable beneficiary,
+        uint256 value
     )
         private
     {
 
         //Transferring fee to the wallet
-        require(msg.value == amount.add(fee), "Lock: Enough ETH not sent!!");
+        require(value >= amount.add(fee), "Lock: Enough ETH not sent!!");
 
         (bool success,) = _wallet.call.value(fee)("");
         require(success, "Lock: Transfer of fee failed");
