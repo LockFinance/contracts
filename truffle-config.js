@@ -15,7 +15,7 @@ module.exports = {
       provider: () => new HDWalletProvider(process.env.PK, "https://rinkeby.infura.io/v3/" + process.env.INFURA_API_KEY),
       port: 8545,
       network_id: "4",
-      gas: 6000000,
+      gas: 7000000,
       gasPrice: 40000000000
     },
     mainnet: {
@@ -48,7 +48,13 @@ module.exports = {
   },
   compilers: {
     solc: {
-      version: "0.5.13"
+      version: "0.5.15",
+      settings: {
+        optimizer: {
+          enabled: true,
+          runs: 200   // Optimize for how many times you intend to run the code
+        }
+      }
     }
   }
 };

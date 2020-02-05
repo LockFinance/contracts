@@ -1,10 +1,9 @@
-pragma solidity 0.5.13;
+pragma solidity 0.5.15;
 
 import "openzeppelin-solidity/contracts/math/SafeMath.sol";
 import "openzeppelin-solidity/contracts/ownership/Ownable.sol";
 import "openzeppelin-solidity/contracts/token/ERC20/IERC20.sol";
 import "openzeppelin-solidity/contracts/token/ERC20/SafeERC20.sol";
-import "openzeppelin-solidity/contracts/utils/Address.sol";
 
 
 /**
@@ -14,7 +13,6 @@ import "openzeppelin-solidity/contracts/utils/Address.sol";
 contract Lock is Ownable {
     using SafeERC20 for IERC20;
     using SafeMath for uint256;
-    using Address for address;
 
     enum Status { _, OPEN, CLOSED }
     enum TokenStatus {_, ACTIVE, INACTIVE }
@@ -24,17 +22,19 @@ contract Lock is Ownable {
         uint256 minAmount;
         bool emergencyUnlock;
         TokenStatus status;
+        uint256[] tierAmounts;
+        uint256[] tierFees;
     }
 
     Token[] private _tokens;
 
+    IERC20 private _lockToken;
+
+    //Fee per lock in lock token
+    uint256 private _lockTokenFee;
+
     //Keeps track of token index in above array
     mapping(address => uint256) private _tokenVsIndex;
-
-    //Fee to be paid for each lock-up
-    //In percentage
-    //Ex. for 1% enter 100. For 1.25% enter 125
-    uint256 private _fee;
 
     //Wallet where fees will go
     address payable private _wallet;
@@ -48,6 +48,9 @@ contract Lock is Ownable {
         uint256 amount;// Amount locked
         uint256 startDate;// Start date. We can remove this later
         uint256 endDate;
+        uint256 lastLocked;
+        //Amount threshold after a locked asset can be unlocked
+        uint256 amountThreshold;
         address payable beneficiary;// Beneficary who will receive funds
         Status status;
     }
@@ -80,7 +83,6 @@ contract Lock is Ownable {
     event TokenAdded(address indexed token);
     event TokenInactivated(address indexed token);
     event TokenActivated(address indexed token);
-    event FeeChanged(uint256 fee);
     event WalletChanged(address indexed wallet);
     event AssetLocked(
         address indexed token,
@@ -89,13 +91,17 @@ contract Lock is Ownable {
         uint256 id,
         uint256 amount,
         uint256 startDate,
-        uint256 endDate
+        uint256 endDate,
+        bool lockTokenFee,
+        uint256 fee
     );
     event TokenUpdated(
         uint256 indexed id,
         address indexed token,
         uint256 minAmount,
-        bool emergencyUnlock
+        bool emergencyUnlock,
+        uint256[] tierAmounts,
+        uint256[] tierFees
     );
     event Paused();
     event Unpaused();
@@ -128,6 +134,11 @@ contract Lock is Ownable {
         address indexed destToken,
         uint256 amount
     );
+
+    event LockTokenUpdated(address indexed lockTokenAddress);
+    event LockTokenFeeUpdated(uint256 fee);
+
+    event AmountAdded(address indexed beneficiary, uint256 id, uint256 amount);
 
     modifier tokenExist(address token) {
         require(_tokenVsIndex[token] > 0, "Lock: Token does not exist!!");
@@ -184,48 +195,29 @@ contract Lock is Ownable {
     }
 
     /**
-    * @dev constructor
-    * @param fee Fee to be paid for each lock-up
+    * @dev Constructor
     * @param wallet Wallet address where fees will go
-    * @param tokens List of tokens
-    * @param minAmount Min lock-up amount for each token
+    * @param lockTokenAddress Address of the lock token
+    * @param lockTokenFee Fee for each lock in lock token
     */
     constructor(
-        uint256 fee,
         address payable wallet,
-        address[] memory tokens,
-        uint256[] memory minAmount
+        address lockTokenAddress,
+        uint256 lockTokenFee
     )
         public
     {
         require(
-            tokens.length == minAmount.length,
-            "Lock: Length mismatch between token list and their minimum lock amount!!"
-        );
-        require(
             wallet != address(0),
             "Lock: Please provide valid wallet address!!"
         );
-
+        require(
+            lockTokenAddress != address(0),
+            "Lock: Invalid lock token address"
+        );
+        _lockToken = IERC20(lockTokenAddress);
         _wallet = wallet;
-        _fee = fee;
-
-        for(uint256 i = 0; i<tokens.length; i = i.add(1)) {
-            require(
-                _tokenVsIndex[tokens[i]] == 0,
-                "Lock: Token already exists"
-            );
-            _tokens.push(Token({
-                tokenAddress: tokens[i],
-                minAmount: minAmount[i],
-                emergencyUnlock: false,
-                status: TokenStatus.ACTIVE
-            }));
-            _tokenVsIndex[tokens[i]] = _tokens.length;
-
-            emit TokenAdded(tokens[i]);
-        }
-
+        _lockTokenFee = lockTokenFee;
     }
 
     /**
@@ -233,13 +225,6 @@ contract Lock is Ownable {
     */
     function paused() external view returns (bool) {
         return _paused;
-    }
-
-    /**
-    * @dev returns lock-up fee
-    */
-    function getFee() external view returns(uint256) {
-        return _fee;
     }
 
     /**
@@ -254,6 +239,20 @@ contract Lock is Ownable {
     */
     function getTokenCount() external view returns(uint256) {
         return _tokens.length;
+    }
+
+    /**
+    * @dev Returns lock token address
+    */
+    function getLockToken() external view returns(address) {
+        return address(_lockToken);
+    }
+
+    /**
+    * @dev Returns fee per lock in lock token
+    */
+    function getLockTokenFee() external view returns(uint256) {
+        return _lockTokenFee;
     }
 
     /**
@@ -301,7 +300,9 @@ contract Lock is Ownable {
     function getTokenInfo(address tokenAddress) external view returns(
         uint256 minAmount,
         bool emergencyUnlock,
-        TokenStatus status
+        TokenStatus status,
+        uint256[] memory tierAmounts,
+        uint256[] memory tierFees
     )
     {
         uint256 index = _tokenVsIndex[tokenAddress];
@@ -312,7 +313,9 @@ contract Lock is Ownable {
             return (
                 token.minAmount,
                 token.emergencyUnlock,
-                token.status
+                token.status,
+                token.tierAmounts,
+                token.tierFees
             );
         }
     }
@@ -326,8 +329,10 @@ contract Lock is Ownable {
         uint256 amount,
         uint256 startDate,
         uint256 endDate,
+        uint256 lastLocked,
         address beneficiary,
-        Status status
+        Status status,
+        uint256 amountThreshold
     )
     {
         LockedAsset memory asset = _idVsLockedAsset[id];
@@ -337,14 +342,18 @@ contract Lock is Ownable {
         endDate = asset.endDate;
         beneficiary = asset.beneficiary;
         status = asset.status;
+        amountThreshold = asset.amountThreshold;
+        lastLocked = asset.lastLocked;
 
         return(
             token,
             amount,
             startDate,
             endDate,
+            lastLocked,
             beneficiary,
-            status
+            status,
+            amountThreshold
         );
     }
 
@@ -477,6 +486,28 @@ contract Lock is Ownable {
     }
 
     /**
+    * @dev Update lock token address
+    * @param lockTokenAddress New lock token address
+    */
+    function updateLockToken(address lockTokenAddress) external onlyOwner {
+        require(
+            lockTokenAddress != address(0),
+            "Lock: Invalid lock token address"
+        );
+        _lockToken = IERC20(lockTokenAddress);
+        emit LockTokenUpdated(lockTokenAddress);
+    }
+
+    /**
+    * @dev Update fee in lock token
+    * @param lockTokenFee Fee per lock in lock token
+    */
+    function updateLockTokenFee(uint256 lockTokenFee) external onlyOwner {
+        _lockTokenFee - lockTokenFee;
+        emit LockTokenFeeUpdated(lockTokenFee);
+    }
+
+    /**
     * @dev Allows admin to update airdrop at given index
     * @param baseToken Base token address for which airdrop has to be updated
     * @param numerator New numerator
@@ -516,16 +547,6 @@ contract Lock is Ownable {
         );
     }
 
-
-    /**
-    * @dev Allows admin to set fee
-    * @param fee New fee values
-    */
-    function setFee(uint256 fee) external onlyOwner {
-        _fee = fee;
-        emit FeeChanged(fee);
-    }
-
     /**
     * @dev Allows admin to set fee receiver wallet
     * @param wallet New wallet address
@@ -545,26 +566,38 @@ contract Lock is Ownable {
     * @param tokenAddress Address of the token to be updated
     * @param minAmount Min amount of tokens required to lock
     * @param emergencyUnlock If token is in emergency unlock state
+    * @param tierAmounts Threshold amount for chargin fee
+    * @param tierFees Fees for each tier
     */
     function updateToken(
         address tokenAddress,
         uint256 minAmount,
-        bool emergencyUnlock
+        bool emergencyUnlock,
+        uint256[] calldata tierAmounts,
+        uint256[] calldata tierFees
     )
         external
         onlyOwner
         tokenExist(tokenAddress)
     {
+        require(
+            tierAmounts.length == tierFees.length,
+            "Lock: Tiers does not match"
+        );
+
         uint256 index = _tokenVsIndex[tokenAddress].sub(1);
         Token storage token = _tokens[index];
         token.minAmount = minAmount;
         token.emergencyUnlock = emergencyUnlock;
-        
+        token.tierAmounts = tierAmounts;
+        token.tierFees = tierFees;
         emit TokenUpdated(
             index,
             tokenAddress,
             minAmount,
-            emergencyUnlock
+            emergencyUnlock,
+            tierAmounts,
+            tierFees
         );
     }
 
@@ -572,20 +605,31 @@ contract Lock is Ownable {
     * @dev Allows admin to add new token to the list
     * @param token Address of the token
     * @param minAmount Minimum amount of tokens to lock for this token
+    * @param tierAmounts Threshold amount for chargin fee
+    * @param tierFees Fees for each tier
     */
     function addToken(
         address token,
-        uint256 minAmount
+        uint256 minAmount,
+        uint256[] calldata tierAmounts,
+        uint256[] calldata tierFees
     )
         external
         onlyOwner
         tokenDoesNotExist(token)
     {
+        require(
+            tierAmounts.length == tierFees.length,
+            "Lock: Tiers does not match"
+        );
+
         _tokens.push(Token({
             tokenAddress: token,
             minAmount: minAmount,
             emergencyUnlock: false,
-            status: TokenStatus.ACTIVE
+            status: TokenStatus.ACTIVE,
+            tierAmounts: tierAmounts,
+            tierFees: tierFees
         }));
         _tokenVsIndex[token] = _tokens.length;
 
@@ -646,12 +690,16 @@ contract Lock is Ownable {
     * @param amount Amount of tokens to lock
     * @param duration Duration for which tokens to be locked. In seconds
     * @param beneficiary Address of the beneficiary
+    * @param amountThreshold Threshold amount which is when locked in a single lock will make that lock claimable
+    * @param lockFee Bool to check if fee to be paid in lock token or not
     */
     function lock(
         address tokenAddress,
         uint256 amount,
         uint256 duration,
-        address payable beneficiary
+        address payable beneficiary,
+        uint256 amountThreshold,
+        bool lockFee
     )
         external
         payable
@@ -663,7 +711,9 @@ contract Lock is Ownable {
             amount,
             duration,
             beneficiary,
-            msg.value
+            amountThreshold,
+            msg.value,
+            lockFee
         );
 
         require(remValue == 0, "Lock: Sent more ethers then required");
@@ -677,12 +727,16 @@ contract Lock is Ownable {
     * @param amounts List of amount of tokens to lock
     * @param durations List of duration for which tokens to be locked. In seconds
     * @param beneficiaries List of addresses of the beneficiaries
+    * @param amountThresholds List of threshold amounts which is when locked in a single lock will make that lock claimable
+    * @param lockFee Bool to check if fee to be paid in lock token or not
     */
     function bulkLock(
         address tokenAddress,
         uint256[] calldata amounts,
         uint256[] calldata durations,
-        address payable[] calldata beneficiaries
+        address payable[] calldata beneficiaries,
+        uint256[] calldata amountThresholds,
+        bool lockFee
     )
         external
         payable
@@ -692,6 +746,10 @@ contract Lock is Ownable {
         uint256 remValue = msg.value;
         require(amounts.length == durations.length, "Lock: Invalid input");
         require(amounts.length == beneficiaries.length, "Lock: Invalid input");
+        require(
+            amounts.length == amountThresholds.length,
+            "Lock: Invalid input"
+        );
 
         for(uint256 i = 0; i < amounts.length; i++){
             remValue = _lock(
@@ -699,7 +757,9 @@ contract Lock is Ownable {
                 amounts[i],
                 durations[i],
                 beneficiaries[i],
-                remValue
+                amountThresholds[i],
+                remValue,
+                lockFee
             );
         }
 
@@ -733,16 +793,78 @@ contract Lock is Ownable {
     }
 
     /**
+    * @dev Allows anyone to add more tokens in the existing lock
+    * @param id id of the locked asset
+    * @param amount Amount to be added
+    * @param lockFee Bool to check if fee to be paid in lock token or not
+    */
+    function addAmount(
+        uint256 id,
+        uint256 amount,
+        bool lockFee
+    )
+        external
+        payable
+        whenNotPaused
+    {
+        LockedAsset storage lockedAsset = _idVsLockedAsset[id];
+
+        require(lockedAsset.status == Status.OPEN, "Lock: Lock is not open");
+        
+        Token memory token = _tokens[_tokenVsIndex[lockedAsset.token].sub(1)];
+
+        //At the time of addition of tokens previous aridrops will be claimed
+        _claimAirdroppedTokens(
+            lockedAsset.token,
+            lockedAsset.lastLocked,
+            lockedAsset.amount
+        );
+
+
+        uint256 fee = 0;
+        uint256 newAmount = 0;
+        (fee, newAmount) = _calculateFee(amount, lockFee, token);
+
+        if(lockFee) {
+            _lockToken.safeTransferFrom(msg.sender, _wallet, _lockTokenFee);
+        }
+        if(ETH_ADDRESS == lockedAsset.token) {
+            require(amount == msg.value, "Lock: Insufficient value sent");
+
+            if(!lockFee) {
+                (bool success,) = _wallet.call.value(fee)("");
+                require(success, "Lock: Transfer of fee failed");
+            }
+        }
+        else {
+            if(!lockFee){
+                IERC20(lockedAsset.token).safeTransferFrom(msg.sender, _wallet, fee);
+            }
+
+            IERC20(lockedAsset.token).safeTransferFrom(msg.sender, address(this), newAmount);
+        }
+
+        lockedAsset.amount = lockedAsset.amount.add(newAmount);
+        lockedAsset.lastLocked = block.timestamp;
+
+        emit AmountAdded(lockedAsset.beneficiary, id, newAmount);
+
+    }
+
+
+    /**
     * @dev Returns whether given asset can be claimed or not
     * @param id id of an asset
     */
     function claimable(uint256 id) public view returns(bool){
 
+        LockedAsset memory asset = _idVsLockedAsset[id];
         if(
-            _idVsLockedAsset[id].status == Status.OPEN &&
+            asset.status == Status.OPEN &&
             (
-                _idVsLockedAsset[id].endDate <= block.timestamp ||
-                _tokens[_tokenVsIndex[_idVsLockedAsset[id].token].sub(1)].emergencyUnlock
+                asset.endDate <= block.timestamp ||
+                _tokens[_tokenVsIndex[asset.token].sub(1)].emergencyUnlock ||
+                (asset.amountThreshold > 0 && asset.amount >= asset.amountThreshold)
             )
         )
         {
@@ -772,7 +894,9 @@ contract Lock is Ownable {
         uint256 amount,
         uint256 duration,
         address payable beneficiary,
-        uint256 value
+        uint256 amountThreshold,
+        uint256 value,
+        bool lockFee
     )
         private
         returns(uint256)
@@ -790,8 +914,11 @@ contract Lock is Ownable {
         );
 
         uint256 endDate = block.timestamp.add(duration);
-        uint256 fee = amount.mul(_fee).div(10000);
-        uint256 newAmount = amount.sub(fee);
+        uint256 fee = 0;
+        uint256 newAmount = 0;
+
+        (fee, newAmount) = _calculateFee(amount, lockFee, token);
+
         uint256 remValue = value;
 
         if(ETH_ADDRESS == tokenAddress) {
@@ -800,7 +927,9 @@ contract Lock is Ownable {
                 fee,
                 endDate,
                 beneficiary,
-                value
+                amountThreshold,
+                value,
+                lockFee
             );
 
             remValue = remValue.sub(amount);
@@ -812,7 +941,9 @@ contract Lock is Ownable {
                 newAmount,
                 fee,
                 endDate,
-                beneficiary
+                beneficiary,
+                amountThreshold,
+                lockFee
             );
         }
 
@@ -823,7 +954,9 @@ contract Lock is Ownable {
             _lockId,
             newAmount,
             block.timestamp,
-            endDate
+            endDate,
+            lockFee,
+            fee
         );
 
         return remValue;
@@ -837,16 +970,25 @@ contract Lock is Ownable {
         uint256 fee,
         uint256 endDate,
         address payable beneficiary,
-        uint256 value
+        uint256 amountThreshold,
+        uint256 value,
+        bool lockFee
     )
         private
     {
 
         //Transferring fee to the wallet
-        require(value >= amount.add(fee), "Lock: Enough ETH not sent!!");
 
-        (bool success,) = _wallet.call.value(fee)("");
-        require(success, "Lock: Transfer of fee failed");
+        if(lockFee){
+	    require(value >= amount, "Lock: Enough ETH not sent!!");
+            _lockToken.safeTransferFrom(msg.sender, _wallet, fee);
+        }
+        else {
+            require(value >= amount.add(fee), "Lock: Enough ETH not sent!!");
+            (bool success,) = _wallet.call.value(fee)("");
+            require(success, "Lock: Transfer of fee failed");
+        }
+        
 
         _lockId = _lockId.add(1);
 
@@ -855,8 +997,10 @@ contract Lock is Ownable {
             amount: amount,
             startDate: block.timestamp,
             endDate: endDate,
+            lastLocked: block.timestamp,
             beneficiary: beneficiary,
-            status: Status.OPEN
+            status: Status.OPEN,
+            amountThreshold: amountThreshold
         });
         _userVsLockIds[beneficiary].push(_lockId);
     }
@@ -869,14 +1013,21 @@ contract Lock is Ownable {
         uint256 amount,
         uint256 fee,
         uint256 endDate,
-        address payable beneficiary
+        address payable beneficiary,
+        uint256 amountThreshold,
+        bool lockFee
     )
         private
     {
 
         //Transfer fee to the wallet
-        IERC20(token).safeTransferFrom(msg.sender, _wallet, fee);
-
+        if(lockFee){
+            _lockToken.safeTransferFrom(msg.sender, _wallet, fee);
+        }
+        else {
+            IERC20(token).safeTransferFrom(msg.sender, _wallet, fee);
+        }
+        
         //Transfer required amount of tokens to the contract from user balance
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
 
@@ -887,8 +1038,10 @@ contract Lock is Ownable {
             amount: amount,
             startDate: block.timestamp,
             endDate: endDate,
+            lastLocked: block.timestamp,
             beneficiary: beneficiary,
-            status: Status.OPEN
+            status: Status.OPEN,
+            amountThreshold: amountThreshold
         });
         _userVsLockIds[beneficiary].push(_lockId);
     }
@@ -904,7 +1057,7 @@ contract Lock is Ownable {
 
         _claimAirdroppedTokens(
             asset.token,
-            asset.startDate,
+            asset.lastLocked,
             asset.amount
         );
     }
@@ -918,7 +1071,7 @@ contract Lock is Ownable {
         IERC20(asset.token).safeTransfer(msg.sender, asset.amount);
         _claimAirdroppedTokens(
             asset.token,
-            asset.startDate,
+            asset.lastLocked,
             asset.amount
         );
     }
@@ -926,12 +1079,12 @@ contract Lock is Ownable {
     /**
     * @dev Helper method to claim airdropped tokens
     * @param baseToken Base Token address
-    * @param lockDate Date when base tokens were locked
+    * @param lastLocked Date when base tokens were last locked
     * @param amount Amount of base tokens locked
     */
     function _claimAirdroppedTokens(
         address baseToken,
-        uint256 lockDate,
+        uint256 lastLocked,
         uint256 amount
     )
         private
@@ -942,12 +1095,52 @@ contract Lock is Ownable {
 
             Airdrop memory airdrop = _baseTokenVsAirdrops[baseToken][i];
 
-            if(airdrop.date > lockDate && airdrop.date < block.timestamp) {
+            if(airdrop.date > lastLocked && airdrop.date < block.timestamp) {
                 uint256 airdropAmount = amount.mul(airdrop.numerator).div(airdrop.denominator);
                 IERC20(airdrop.destToken).safeTransfer(msg.sender, airdropAmount);
                 emit TokensAirdropped(airdrop.destToken, airdropAmount);
             }
         }
 
+    }
+
+    //Helper method to calculate fee
+    function _calculateFee(
+        uint256 amount,
+        bool lockFee,
+        Token memory token
+    )
+        private
+        view
+        returns(uint256 fee, uint256 newAmount)
+    {
+        newAmount = amount;
+
+        if(lockFee){
+            fee = _lockTokenFee;
+        }
+        else{
+            uint256 tempAmount = amount;
+            for(
+            uint256 i = 0; (i < token.tierAmounts.length - 1 && tempAmount > 0); i++
+            )
+            {
+                if(tempAmount >= token.tierAmounts[i]){
+                    tempAmount = tempAmount.sub(token.tierAmounts[i]);
+                    fee = fee.add(token.tierAmounts[i].mul(token.tierFees[i]).div(10000));
+                }
+                else{
+                    fee = fee.add(tempAmount.mul(token.tierFees[i]).div(10000));
+                    tempAmount = 0;
+                }
+            }
+            //All remaining tokens will be calculated in last tier
+            fee = fee.add(
+                tempAmount.mul(token.tierFees[token.tierAmounts.length - 1])
+                .div(10000)
+            );
+            newAmount = amount.sub(fee);
+        }
+        return(fee, newAmount);
     }
 }
