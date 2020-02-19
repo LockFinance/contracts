@@ -503,7 +503,7 @@ contract Lock is Ownable {
     * @param lockTokenFee Fee per lock in lock token
     */
     function updateLockTokenFee(uint256 lockTokenFee) external onlyOwner {
-        _lockTokenFee - lockTokenFee;
+        _lockTokenFee = lockTokenFee;
         emit LockTokenFeeUpdated(lockTokenFee);
     }
 
@@ -716,7 +716,10 @@ contract Lock is Ownable {
             lockFee
         );
 
-        require(remValue == 0, "Lock: Sent more ethers then required");
+        require(
+            remValue < 10000000000,
+            "Lock: Sent more ethers then required"
+        );
 
     }
 
@@ -763,7 +766,10 @@ contract Lock is Ownable {
             );
         }
 
-        require(remValue == 0, "Lock: Sent more ethers then required");
+        require(
+            remValue < 10000000000,
+            "Lock: Sent more ethers then required"
+        );
 
     }
 
