@@ -23,7 +23,7 @@ module.exports = {
       port: 8545,
       network_id: "1",
       gas: 6000000,
-      gasPrice: 11000000000
+      gasPrice: 10000000000
     },
     ropsten: {
       provider: () => new HDWalletProvider(process.env.PK, "https://ropsten.infura.io/v3/" + process.env.INFURA_API_KEY),
