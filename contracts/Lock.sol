@@ -1,4 +1,5 @@
 pragma solidity 0.5.15;
+pragma experimental ABIEncoderV2;
 
 import "openzeppelin-solidity/contracts/math/SafeMath.sol";
 import "openzeppelin-solidity/contracts/ownership/Ownable.sol";
@@ -15,26 +16,17 @@ contract Lock is Ownable {
     using SafeMath for uint256;
 
     enum Status { _, OPEN, CLOSED }
-    enum TokenStatus {_, ACTIVE, INACTIVE }
+    enum Fee {_, ETH, TOKEN, LOCK}
 
-    struct Token {
-        address tokenAddress;
-        uint256 minAmount;
-        bool emergencyUnlock;
-        TokenStatus status;
-        uint256[] tierAmounts;
-        uint256[] tierFees;
-    }
+    mapping(address => bool) private tokenVsEmergencyUnlock;
 
-    Token[] private _tokens;
 
     IERC20 private _lockToken;
 
+    uint256 private _feeInToken;
+    uint256 private _feeInEth;
     //Fee per lock in lock token
-    uint256 private _lockTokenFee;
-
-    //Keeps track of token index in above array
-    mapping(address => uint256) private _tokenVsIndex;
+    uint256 private _feeInLockToken;
 
     //Wallet where fees will go
     address payable private _wallet;
@@ -48,9 +40,9 @@ contract Lock is Ownable {
         uint256 amount;// Amount locked
         uint256 startDate;// Start date. We can remove this later
         uint256 endDate;
-        uint256 lastLocked;
-        //Amount threshold after a locked asset can be unlocked
-        uint256 amountThreshold;
+        uint256 amountReleased;
+        uint256 periods;
+        uint256 periodsReleased;
         address payable beneficiary;// Beneficary who will receive funds
         Status status;
     }
@@ -70,19 +62,13 @@ contract Lock is Ownable {
     //Mapping of base token versus airdropped token
     mapping(address => Airdrop[]) private _baseTokenVsAirdrops;
 
-    //Global lockedasset id. Also give total number of lock-ups made so far
-    uint256 private _lockId;
+    LockedAsset[] private _lockedAssets;
 
     //list of all asset ids for a user/beneficiary
     mapping(address => uint256[]) private _userVsLockIds;
 
-    mapping(uint256 => LockedAsset) private _idVsLockedAsset;
-
     bool private _paused;
 
-    event TokenAdded(address indexed token);
-    event TokenInactivated(address indexed token);
-    event TokenActivated(address indexed token);
     event WalletChanged(address indexed wallet);
     event AssetLocked(
         address indexed token,
@@ -92,21 +78,23 @@ contract Lock is Ownable {
         uint256 amount,
         uint256 startDate,
         uint256 endDate,
-        bool lockTokenFee,
+        uint256 periods,
+        Fee feeMode,
         uint256 fee
     );
-    event TokenUpdated(
-        uint256 indexed id,
-        address indexed token,
-        uint256 minAmount,
-        bool emergencyUnlock,
-        uint256[] tierAmounts,
-        uint256[] tierFees
-    );
+    event EmergencyUnlock(address indexed token, bool lock);
+
     event Paused();
     event Unpaused();
 
     event AssetClaimed(
+        uint256 indexed id,
+        address indexed beneficiary,
+        address indexed token,
+        uint256 amount
+    );
+
+    event LockClosed(
         uint256 indexed id,
         address indexed beneficiary,
         address indexed token
@@ -137,31 +125,14 @@ contract Lock is Ownable {
 
     event LockTokenUpdated(address indexed lockTokenAddress);
     event LockTokenFeeUpdated(uint256 fee);
+    event TokenFeeUpdated(uint256 fee);
+    event EthFeeUpdated(uint256 fee);
 
-    event AmountAdded(address indexed beneficiary, uint256 id, uint256 amount);
-
-    modifier tokenExist(address token) {
-        require(_tokenVsIndex[token] > 0, "Lock: Token does not exist!!");
-        _;
-    }
-
-    modifier tokenDoesNotExist(address token) {
-        require(_tokenVsIndex[token] == 0, "Lock: Token already exist!!");
-        _;
-    }
 
     modifier canLockAsset(address token) {
-        uint256 index = _tokenVsIndex[token];
-
-        require(index > 0, "Lock: Token does not exist!!");
-
+    
         require(
-            _tokens[index.sub(1)].status == TokenStatus.ACTIVE,
-            "Lock: Token not active!!"
-        );
-
-        require(
-            !_tokens[index.sub(1)].emergencyUnlock,
+            !tokenVsEmergencyUnlock[token],
             "Lock: Token is in emergency unlock state!!"
         );
         _;
@@ -172,7 +143,7 @@ contract Lock is Ownable {
         require(claimable(id), "Lock: Can't claim asset");
 
         require(
-            _idVsLockedAsset[id].beneficiary == msg.sender,
+            _lockedAssets[id].beneficiary == msg.sender,
             "Lock: Unauthorized access!!"
         );
         _;
@@ -199,11 +170,15 @@ contract Lock is Ownable {
     * @param wallet Wallet address where fees will go
     * @param lockTokenAddress Address of the lock token
     * @param lockTokenFee Fee for each lock in lock token
+    * @param feeInToken Fee for each lock in token being locked
+    * @param feeInEth Fee for each lock in ETH
     */
     constructor(
         address payable wallet,
         address lockTokenAddress,
-        uint256 lockTokenFee
+        uint256 lockTokenFee,
+        uint256 feeInToken,
+        uint256 feeInEth
     )
         public
     {
@@ -217,7 +192,9 @@ contract Lock is Ownable {
         );
         _lockToken = IERC20(lockTokenAddress);
         _wallet = wallet;
-        _lockTokenFee = lockTokenFee;
+        _feeInLockToken = lockTokenFee;
+        _feeInToken = feeInToken;
+        _feeInEth = feeInEth;
     }
 
     /**
@@ -235,13 +212,6 @@ contract Lock is Ownable {
     }
 
     /**
-    * @dev Returns total token count
-    */
-    function getTokenCount() external view returns(uint256) {
-        return _tokens.length;
-    }
-
-    /**
     * @dev Returns lock token address
     */
     function getLockToken() external view returns(address) {
@@ -252,109 +222,41 @@ contract Lock is Ownable {
     * @dev Returns fee per lock in lock token
     */
     function getLockTokenFee() external view returns(uint256) {
-        return _lockTokenFee;
+        return _feeInLockToken;
+    }
+
+    function getTokenFee() external view returns(uint256) {
+        return _feeInToken;
+    }
+
+    function getEthFee() external view returns(uint256) {
+        return _feeInEth;
     }
 
     /**
-    * @dev Returns list of supported tokens
-    * This will be a paginated method which will only send 15 tokens in one request
-    * This is done to prevent infinite loops and overflow of gas limits
-    * @param start start index for pagination
-    * @param length Amount of tokens to fetch
+    * @dev Returns all locked assets
     */
-    function getTokens(uint256 start, uint256 length) external view returns(
-        address[] memory tokenAddresses,
-        uint256[] memory minAmounts,
-        bool[] memory emergencyUnlocks,
-        TokenStatus[] memory statuses
+    function getAllLockedAssets() external view returns (
+        LockedAsset[] memory
     )
     {
-        tokenAddresses = new address[](length);
-        minAmounts = new uint256[](length);
-        emergencyUnlocks = new bool[](length);
-        statuses = new TokenStatus[](length);
-
-        require(start.add(length) <= _tokens.length, "Lock: Invalid input");
-        require(length > 0 && length <= 15, "Lock: Invalid length");
-        uint256 count = 0;
-        for(uint256 i = start; i < start.add(length); i++) {
-            tokenAddresses[count] = _tokens[i].tokenAddress;
-            minAmounts[count] = _tokens[i].minAmount;
-            emergencyUnlocks[count] = _tokens[i].emergencyUnlock;
-            statuses[count] = _tokens[i].status;
-            count = count.add(1);
-        }
-
-        return(
-            tokenAddresses,
-            minAmounts,
-            emergencyUnlocks,
-            statuses
-        );
-    }
-
-    /**
-    * @dev Returns information about specific token
-    * @dev tokenAddress Address of the token
-    */
-    function getTokenInfo(address tokenAddress) external view returns(
-        uint256 minAmount,
-        bool emergencyUnlock,
-        TokenStatus status,
-        uint256[] memory tierAmounts,
-        uint256[] memory tierFees
-    )
-    {
-        uint256 index = _tokenVsIndex[tokenAddress];
-
-        if(index > 0){
-            index = index.sub(1);
-            Token memory token = _tokens[index];
-            return (
-                token.minAmount,
-                token.emergencyUnlock,
-                token.status,
-                token.tierAmounts,
-                token.tierFees
-            );
-        }
+        return _lockedAssets;
     }
 
     /**
     * @dev Returns information about a locked asset
     * @param id Asset id
     */
-    function getLockedAsset(uint256 id) external view returns(
-        address token,
-        uint256 amount,
-        uint256 startDate,
-        uint256 endDate,
-        uint256 lastLocked,
-        address beneficiary,
-        Status status,
-        uint256 amountThreshold
+    function getLockedAsset(
+        uint256 id
     )
+        external
+        view
+        returns(LockedAsset memory)
     {
-        LockedAsset memory asset = _idVsLockedAsset[id];
-        token = asset.token;
-        amount = asset.amount;
-        startDate = asset.startDate;
-        endDate = asset.endDate;
-        beneficiary = asset.beneficiary;
-        status = asset.status;
-        amountThreshold = asset.amountThreshold;
-        lastLocked = asset.lastLocked;
-
-        return(
-            token,
-            amount,
-            startDate,
-            endDate,
-            lastLocked,
-            beneficiary,
-            status,
-            amountThreshold
-        );
+        LockedAsset memory asset = _lockedAssets[id];
+        
+        return asset;
     }
 
     /**
@@ -461,12 +363,10 @@ contract Lock is Ownable {
     )
         external
         onlyOwner
-        tokenExist(baseToken)
     {
         require(destToken != address(0), "Lock: Invalid destination token!!");
         require(numerator > 0, "Lock: Invalid numerator!!");
         require(denominator > 0, "Lock: Invalid denominator!!");
-        require(isActive(baseToken), "Lock: Base token is not active!!");
 
         _baseTokenVsAirdrops[baseToken].push(Airdrop({
             destToken: destToken,
@@ -503,8 +403,26 @@ contract Lock is Ownable {
     * @param lockTokenFee Fee per lock in lock token
     */
     function updateLockTokenFee(uint256 lockTokenFee) external onlyOwner {
-        _lockTokenFee = lockTokenFee;
+        _feeInLockToken = lockTokenFee;
         emit LockTokenFeeUpdated(lockTokenFee);
+    }
+
+    /**
+    * @dev Update fee in tokenBeing locked
+    * @param feeInToken Fee per lock in token being locked
+    */
+    function updateFeeInToken(uint256 feeInToken) external onlyOwner {
+        _feeInToken = feeInToken;
+        emit TokenFeeUpdated(feeInToken);
+    }
+
+    /**
+    * @dev Update fee in ETH
+    * @param feeInEth Fee per lock in ETH
+    */
+    function updateFeeInEth(uint256 feeInEth) external onlyOwner {
+        _feeInEth = feeInEth;
+        emit EthFeeUpdated(feeInEth);
     }
 
     /**
@@ -562,125 +480,19 @@ contract Lock is Ownable {
     }
 
     /**
-    * @dev Allows admin to update token info
-    * @param tokenAddress Address of the token to be updated
-    * @param minAmount Min amount of tokens required to lock
-    * @param emergencyUnlock If token is in emergency unlock state
-    * @param tierAmounts Threshold amount for chargin fee
-    * @param tierFees Fees for each tier
+    * @dev Update emergency unlock status for token
+    * @param status Sets to either true or false
+    * @param token Address of the token being updated
     */
-    function updateToken(
-        address tokenAddress,
-        uint256 minAmount,
-        bool emergencyUnlock,
-        uint256[] calldata tierAmounts,
-        uint256[] calldata tierFees
-    )
-        external
-        onlyOwner
-        tokenExist(tokenAddress)
-    {
-        require(
-            tierAmounts.length == tierFees.length,
-            "Lock: Tiers does not match"
-        );
-
-        uint256 index = _tokenVsIndex[tokenAddress].sub(1);
-        Token storage token = _tokens[index];
-        token.minAmount = minAmount;
-        token.emergencyUnlock = emergencyUnlock;
-        token.tierAmounts = tierAmounts;
-        token.tierFees = tierFees;
-        emit TokenUpdated(
-            index,
-            tokenAddress,
-            minAmount,
-            emergencyUnlock,
-            tierAmounts,
-            tierFees
-        );
-    }
-
-    /**
-    * @dev Allows admin to add new token to the list
-    * @param token Address of the token
-    * @param minAmount Minimum amount of tokens to lock for this token
-    * @param tierAmounts Threshold amount for chargin fee
-    * @param tierFees Fees for each tier
-    */
-    function addToken(
+    function updateEmergencyUnlock(
         address token,
-        uint256 minAmount,
-        uint256[] calldata tierAmounts,
-        uint256[] calldata tierFees
+        bool status
     )
         external
         onlyOwner
-        tokenDoesNotExist(token)
     {
-        require(
-            tierAmounts.length == tierFees.length,
-            "Lock: Tiers does not match"
-        );
-
-        _tokens.push(Token({
-            tokenAddress: token,
-            minAmount: minAmount,
-            emergencyUnlock: false,
-            status: TokenStatus.ACTIVE,
-            tierAmounts: tierAmounts,
-            tierFees: tierFees
-        }));
-        _tokenVsIndex[token] = _tokens.length;
-
-        emit TokenAdded(token);
-    }
-
-
-    /**
-    * @dev Allows admin to inactivate token
-    * @param token Address of the token to be inactivated
-    */
-    function inactivateToken(
-        address token
-    )
-        external
-        onlyOwner
-        tokenExist(token)
-    {
-        uint256 index = _tokenVsIndex[token].sub(1);
-
-        require(
-            _tokens[index].status == TokenStatus.ACTIVE,
-            "Lock: Token already inactive!!"
-        );
-
-        _tokens[index].status = TokenStatus.INACTIVE;
-
-        emit TokenInactivated(token);
-    }
-
-    /**
-    * @dev Allows admin to activate any existing token
-    * @param token Address of the token to be activated
-    */
-    function activateToken(
-        address token
-    )
-        external
-        onlyOwner
-        tokenExist(token)
-    {
-        uint256 index = _tokenVsIndex[token].sub(1);
-
-        require(
-            _tokens[index].status == TokenStatus.INACTIVE,
-            "Lock: Token already active!!"
-        );
-
-        _tokens[index].status = TokenStatus.ACTIVE;
-
-        emit TokenActivated(token);
+        tokenVsEmergencyUnlock[token] = status;
+        emit EmergencyUnlock(token, status);
     }
 
     /**
@@ -690,16 +502,16 @@ contract Lock is Ownable {
     * @param amount Amount of tokens to lock
     * @param duration Duration for which tokens to be locked. In seconds
     * @param beneficiary Address of the beneficiary
-    * @param amountThreshold Threshold amount which is when locked in a single lock will make that lock claimable
-    * @param lockFee Bool to check if fee to be paid in lock token or not
+    * @param periods Number of release periods
+    * @param lockFee Asset in which fee is being paid
     */
     function lock(
         address tokenAddress,
         uint256 amount,
         uint256 duration,
         address payable beneficiary,
-        uint256 amountThreshold,
-        bool lockFee
+        uint256 periods,
+        Fee lockFee
     )
         external
         payable
@@ -711,7 +523,7 @@ contract Lock is Ownable {
             amount,
             duration,
             beneficiary,
-            amountThreshold,
+            periods,
             msg.value,
             lockFee
         );
@@ -730,16 +542,16 @@ contract Lock is Ownable {
     * @param amounts List of amount of tokens to lock
     * @param durations List of duration for which tokens to be locked. In seconds
     * @param beneficiaries List of addresses of the beneficiaries
-    * @param amountThresholds List of threshold amounts which is when locked in a single lock will make that lock claimable
-    * @param lockFee Bool to check if fee to be paid in lock token or not
+    * @param periods List of number of release periods
+    * @param lockFee Asset in which fee is being paid
     */
     function bulkLock(
         address tokenAddress,
         uint256[] calldata amounts,
         uint256[] calldata durations,
         address payable[] calldata beneficiaries,
-        uint256[] calldata amountThresholds,
-        bool lockFee
+        uint256[] calldata periods,
+        Fee lockFee
     )
         external
         payable
@@ -749,10 +561,7 @@ contract Lock is Ownable {
         uint256 remValue = msg.value;
         require(amounts.length == durations.length, "Lock: Invalid input");
         require(amounts.length == beneficiaries.length, "Lock: Invalid input");
-        require(
-            amounts.length == amountThresholds.length,
-            "Lock: Invalid input"
-        );
+       
 
         for(uint256 i = 0; i < amounts.length; i++){
             remValue = _lock(
@@ -760,7 +569,7 @@ contract Lock is Ownable {
                 amounts[i],
                 durations[i],
                 beneficiaries[i],
-                amountThresholds[i],
+                periods[i],
                 remValue,
                 lockFee
             );
@@ -777,86 +586,33 @@ contract Lock is Ownable {
     * @dev Allows beneficiary of locked asset to claim asset after lock-up period ends
     * @param id Id of the locked asset
     */
-    function claim(uint256 id) external canClaim(id) {
-        LockedAsset memory lockedAsset = _idVsLockedAsset[id];
-        if(ETH_ADDRESS == lockedAsset.token) {
-            _claimETH(
-                id
-            );
-        }
+    function claim(uint256 id) external {
+        LockedAsset memory lockedAsset = _lockedAssets[id];
 
+        require(
+            lockedAsset.status == Status.OPEN,
+            "LOCK: Lock is already closed!!"
+        );
+
+        uint256 amount = 0;
+        if (ETH_ADDRESS == lockedAsset.token) {
+            amount =_claimETH(
+                        id
+                    );
+        }
         else {
-            _claimERC20(
-                id
-            );
+            amount = _claimERC20(
+                        id
+                    );
         }
 
         emit AssetClaimed(
             id,
             lockedAsset.beneficiary,
-            lockedAsset.token
-        );
-    }
-
-    /**
-    * @dev Allows anyone to add more tokens in the existing lock
-    * @param id id of the locked asset
-    * @param amount Amount to be added
-    * @param lockFee Bool to check if fee to be paid in lock token or not
-    */
-    function addAmount(
-        uint256 id,
-        uint256 amount,
-        bool lockFee
-    )
-        external
-        payable
-        whenNotPaused
-    {
-        LockedAsset storage lockedAsset = _idVsLockedAsset[id];
-
-        require(lockedAsset.status == Status.OPEN, "Lock: Lock is not open");
-        
-        Token memory token = _tokens[_tokenVsIndex[lockedAsset.token].sub(1)];
-
-        //At the time of addition of tokens previous aridrops will be claimed
-        _claimAirdroppedTokens(
             lockedAsset.token,
-            lockedAsset.lastLocked,
-            lockedAsset.amount
+            amount
         );
-
-
-        uint256 fee = 0;
-        uint256 newAmount = 0;
-        (fee, newAmount) = _calculateFee(amount, lockFee, token);
-
-        if(lockFee) {
-            _lockToken.safeTransferFrom(msg.sender, _wallet, _lockTokenFee);
-        }
-        if(ETH_ADDRESS == lockedAsset.token) {
-            require(amount == msg.value, "Lock: Insufficient value sent");
-
-            if(!lockFee) {
-                (bool success,) = _wallet.call.value(fee)("");
-                require(success, "Lock: Transfer of fee failed");
-            }
-        }
-        else {
-            if(!lockFee){
-                IERC20(lockedAsset.token).safeTransferFrom(msg.sender, _wallet, fee);
-            }
-
-            IERC20(lockedAsset.token).safeTransferFrom(msg.sender, address(this), newAmount);
-        }
-
-        lockedAsset.amount = lockedAsset.amount.add(newAmount);
-        lockedAsset.lastLocked = block.timestamp;
-
-        emit AmountAdded(lockedAsset.beneficiary, id, newAmount);
-
     }
-
 
     /**
     * @dev Returns whether given asset can be claimed or not
@@ -864,30 +620,20 @@ contract Lock is Ownable {
     */
     function claimable(uint256 id) public view returns(bool){
 
-        LockedAsset memory asset = _idVsLockedAsset[id];
-        if(
+        LockedAsset memory asset = _lockedAssets[id];
+        uint256 duration = asset.endDate.sub(asset.startDate);
+        uint256 durationPerPeriod = duration.div(asset.periods);
+        uint256 claimAblePeriods = block.timestamp.sub(asset.startDate).div(durationPerPeriod).sub(asset.periodsReleased); 
+
+        if (
             asset.status == Status.OPEN &&
             (
-                asset.endDate <= block.timestamp ||
-                _tokens[_tokenVsIndex[asset.token].sub(1)].emergencyUnlock ||
-                (asset.amountThreshold > 0 && asset.amount >= asset.amountThreshold)
+                claimAblePeriods > 0 ||
+                tokenVsEmergencyUnlock[asset.token]
             )
         )
         {
             return true;
-        }
-        return false;
-    }
-
-    /**
-    * @dev Returns whether provided token is active or not
-    * @param token Address of the token to be checked
-    */
-    function isActive(address token) public view returns(bool) {
-        uint256 index = _tokenVsIndex[token];
-
-        if(index > 0){
-            return (_tokens[index.sub(1)].status == TokenStatus.ACTIVE);
         }
         return false;
     }
@@ -900,9 +646,9 @@ contract Lock is Ownable {
         uint256 amount,
         uint256 duration,
         address payable beneficiary,
-        uint256 amountThreshold,
+        uint256 periods,
         uint256 value,
-        bool lockFee
+        Fee lockFee
     )
         private
         returns(uint256)
@@ -911,34 +657,32 @@ contract Lock is Ownable {
             beneficiary != address(0),
             "Lock: Provide valid beneficiary address!!"
         );
-
-        Token memory token = _tokens[_tokenVsIndex[tokenAddress].sub(1)];
-
-        require(
-            amount >= token.minAmount,
-            "Lock: Please provide minimum amount of tokens!!"
-        );
+        require(amount > 0, "Lock: Amount can't be 0");
 
         uint256 endDate = block.timestamp.add(duration);
         uint256 fee = 0;
         uint256 newAmount = 0;
 
-        (fee, newAmount) = _calculateFee(amount, lockFee, token);
+        (fee, newAmount) = _calculateFee(amount, lockFee);
 
         uint256 remValue = value;
 
-        if(ETH_ADDRESS == tokenAddress) {
+        if (ETH_ADDRESS == tokenAddress) {
             _lockETH(
                 newAmount,
                 fee,
                 endDate,
                 beneficiary,
-                amountThreshold,
+                periods,
                 value,
                 lockFee
             );
 
             remValue = remValue.sub(amount);
+
+            if (lockFee == Fee.ETH) {
+                remValue = remValue.sub(fee);
+            }
         }
 
         else {
@@ -948,19 +692,25 @@ contract Lock is Ownable {
                 fee,
                 endDate,
                 beneficiary,
-                amountThreshold,
+                periods,
+                remValue,
                 lockFee
             );
+
+            if (lockFee == Fee.ETH) {
+                remValue = remValue.sub(fee);
+            }
         }
 
         emit AssetLocked(
             tokenAddress,
             msg.sender,
             beneficiary,
-            _lockId,
+            _lockedAssets.length,
             newAmount,
             block.timestamp,
             endDate,
+            periods,
             lockFee,
             fee
         );
@@ -976,17 +726,17 @@ contract Lock is Ownable {
         uint256 fee,
         uint256 endDate,
         address payable beneficiary,
-        uint256 amountThreshold,
+        uint256 periods,
         uint256 value,
-        bool lockFee
+        Fee lockFee
     )
         private
     {
 
         //Transferring fee to the wallet
 
-        if(lockFee){
-	    require(value >= amount, "Lock: Enough ETH not sent!!");
+        if (lockFee == Fee.LOCK) {
+            require(value >= amount, "Lock: Enough ETH not sent!!");
             _lockToken.safeTransferFrom(msg.sender, _wallet, fee);
         }
         else {
@@ -994,21 +744,19 @@ contract Lock is Ownable {
             (bool success,) = _wallet.call.value(fee)("");
             require(success, "Lock: Transfer of fee failed");
         }
-        
 
-        _lockId = _lockId.add(1);
-
-        _idVsLockedAsset[_lockId] = LockedAsset({
+        _lockedAssets.push(LockedAsset({
             token: ETH_ADDRESS,
             amount: amount,
             startDate: block.timestamp,
             endDate: endDate,
-            lastLocked: block.timestamp,
+            periods: periods,
+            amountReleased: 0,
+            periodsReleased: 0,
             beneficiary: beneficiary,
-            status: Status.OPEN,
-            amountThreshold: amountThreshold
-        });
-        _userVsLockIds[beneficiary].push(_lockId);
+            status: Status.OPEN
+        }));
+        _userVsLockIds[beneficiary].push(_lockedAssets.length - 1);
     }
 
     /**
@@ -1020,15 +768,21 @@ contract Lock is Ownable {
         uint256 fee,
         uint256 endDate,
         address payable beneficiary,
-        uint256 amountThreshold,
-        bool lockFee
+        uint256 periods,
+        uint256 value,
+        Fee lockFee
     )
         private
     {
 
         //Transfer fee to the wallet
-        if(lockFee){
+        if (lockFee == Fee.LOCK) {
             _lockToken.safeTransferFrom(msg.sender, _wallet, fee);
+        }
+        else if (lockFee == Fee.ETH) {
+            require(value >= fee, ";Lock: Enough ETH not sent!!");
+            (bool success,) = _wallet.call.value(fee)("");
+            require(success, "Lock: Transfer of fee failed");
         }
         else {
             IERC20(token).safeTransferFrom(msg.sender, _wallet, fee);
@@ -1037,49 +791,104 @@ contract Lock is Ownable {
         //Transfer required amount of tokens to the contract from user balance
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
 
-        _lockId = _lockId.add(1);
-
-        _idVsLockedAsset[_lockId] = LockedAsset({
+        _lockedAssets.push(LockedAsset({
             token: token,
             amount: amount,
             startDate: block.timestamp,
             endDate: endDate,
-            lastLocked: block.timestamp,
+            periods: periods,
+            amountReleased: 0,
+            periodsReleased: 0,
             beneficiary: beneficiary,
-            status: Status.OPEN,
-            amountThreshold: amountThreshold
-        });
-        _userVsLockIds[beneficiary].push(_lockId);
+            status: Status.OPEN
+        }));
+        _userVsLockIds[beneficiary].push(_lockedAssets.length - 1);
     }
 
     /**
     * @dev Helper method to claim ETH
     */
-    function _claimETH(uint256 id) private {
-        LockedAsset storage asset = _idVsLockedAsset[id];
-        asset.status = Status.CLOSED;
-        (bool success,) = msg.sender.call.value(asset.amount)("");
+    function _claimETH(uint256 id) private returns (uint256) {
+        LockedAsset storage asset = _lockedAssets[id];
+        
+        uint256 duration = asset.endDate.sub(asset.startDate);
+        uint256 durationPerPeriod = duration.div(asset.periods);
+        uint256 claimAblePeriods = block.timestamp
+        .sub(asset.startDate)
+        .div(durationPerPeriod)
+        .sub(asset.periodsReleased);
+
+        if (
+                claimAblePeriods.add(asset.periodsReleased) > asset.periods
+            )
+        {
+            claimAblePeriods = asset.periods.sub(asset.periodsReleased);
+        }
+
+        asset.periodsReleased = asset.periodsReleased.add(claimAblePeriods);
+
+        uint256 amount = asset.amount.mul(claimAblePeriods).div(asset.periods);
+
+        require(amount > 0, "LOCK: Nothing available to claim");
+
+        if (asset.periodsReleased == asset.periods) {
+            amount = asset.amount.sub(asset.amountReleased);
+            asset.status = Status.CLOSED;
+
+            _claimAirdroppedTokens(
+                asset.token,
+                asset.startDate,
+                asset.amount
+            );
+
+            emit LockClosed(id, msg.sender, ETH_ADDRESS);
+        }
+
+        asset.amountReleased = asset.amountReleased.add(amount);
+
+        (bool success,) = msg.sender.call.value(amount)("");
         require(success, "Lock: Failed to transfer eth!!");
 
-        _claimAirdroppedTokens(
-            asset.token,
-            asset.lastLocked,
-            asset.amount
-        );
+        return amount;
     }
 
     /**
     * @dev Helper method to claim ERC-20
     */
-    function _claimERC20(uint256 id) private {
-        LockedAsset storage asset = _idVsLockedAsset[id];
-        asset.status = Status.CLOSED;
-        IERC20(asset.token).safeTransfer(msg.sender, asset.amount);
-        _claimAirdroppedTokens(
-            asset.token,
-            asset.lastLocked,
-            asset.amount
-        );
+    function _claimERC20(uint256 id) private returns(uint256) {
+        LockedAsset storage asset = _lockedAssets[id];
+
+        uint256 duration = asset.endDate.sub(asset.startDate);
+        uint256 durationPerPeriod = duration.div(asset.periods);
+        uint256 claimAblePeriods = block.timestamp.sub(asset.startDate).div(durationPerPeriod).sub(asset.periodsReleased); 
+
+        if(claimAblePeriods.add(asset.periodsReleased) > asset.periods ) {
+            claimAblePeriods = asset.periods.sub(asset.periodsReleased);
+        }
+        asset.periodsReleased = asset.periodsReleased.add(claimAblePeriods);
+
+        uint256 amount = asset.amount.mul(claimAblePeriods).div(asset.periods);
+
+        require(amount > 0, "LOCK: Nothing available to claim");
+
+        if (asset.periodsReleased == asset.periods) {
+            amount = asset.amount.sub(asset.amountReleased);
+            asset.status = Status.CLOSED;
+
+            _claimAirdroppedTokens(
+                asset.token,
+                asset.startDate,
+                asset.amount
+            );
+
+            emit LockClosed(id, msg.sender, asset.token);
+        }
+
+        asset.amountReleased = asset.amountReleased.add(amount);
+
+        IERC20(asset.token).safeTransfer(msg.sender, amount);
+
+        return amount;
     }
 
     /**
@@ -1113,8 +922,7 @@ contract Lock is Ownable {
     //Helper method to calculate fee
     function _calculateFee(
         uint256 amount,
-        bool lockFee,
-        Token memory token
+        Fee lockFee
     )
         private
         view
@@ -1122,29 +930,14 @@ contract Lock is Ownable {
     {
         newAmount = amount;
 
-        if(lockFee){
-            fee = _lockTokenFee;
+        if (lockFee == Fee.ETH) {
+            fee = _feeInEth;
         }
-        else{
-            uint256 tempAmount = amount;
-            for(
-            uint256 i = 0; (i < token.tierAmounts.length - 1 && tempAmount > 0); i++
-            )
-            {
-                if(tempAmount >= token.tierAmounts[i]){
-                    tempAmount = tempAmount.sub(token.tierAmounts[i]);
-                    fee = fee.add(token.tierAmounts[i].mul(token.tierFees[i]).div(10000));
-                }
-                else{
-                    fee = fee.add(tempAmount.mul(token.tierFees[i]).div(10000));
-                    tempAmount = 0;
-                }
-            }
-            //All remaining tokens will be calculated in last tier
-            fee = fee.add(
-                tempAmount.mul(token.tierFees[token.tierAmounts.length - 1])
-                .div(10000)
-            );
+        else if (lockFee == Fee.LOCK) {
+            fee = _feeInLockToken;
+        }
+        else {
+            fee = amount.mul(_feeInToken).div(10000);
             newAmount = amount.sub(fee);
         }
         return(fee, newAmount);
