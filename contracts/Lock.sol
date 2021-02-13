@@ -586,7 +586,7 @@ contract Lock is Ownable {
     * @dev Allows beneficiary of locked asset to claim asset after lock-up period ends
     * @param id Id of the locked asset
     */
-    function claim(uint256 id) external {
+    function claim(uint256 id) external canClaim(id) {
         LockedAsset memory lockedAsset = _lockedAssets[id];
 
         require(
@@ -658,6 +658,7 @@ contract Lock is Ownable {
             "Lock: Provide valid beneficiary address!!"
         );
         require(amount > 0, "Lock: Amount can't be 0");
+        require(periods > 0, "Lock: Periods can't be 0");
 
         uint256 endDate = block.timestamp.add(duration);
         uint256 fee = 0;
@@ -706,7 +707,7 @@ contract Lock is Ownable {
             tokenAddress,
             msg.sender,
             beneficiary,
-            _lockedAssets.length,
+            _lockedAssets.length - 1,
             newAmount,
             block.timestamp,
             endDate,
