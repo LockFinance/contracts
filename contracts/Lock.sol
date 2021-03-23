@@ -20,6 +20,8 @@ contract Lock is Ownable {
 
     mapping(address => bool) private tokenVsEmergencyUnlock;
 
+    mapping(address => uint256) private _lockedTokenAmount;
+
 
     IERC20 private _lockToken;
 
@@ -123,6 +125,13 @@ contract Lock is Ownable {
         uint256 amount
     );
 
+    event TokensAirdroppedFailed(
+        address indexed destToken,
+        uint256 amount,
+        address indexed user,
+        string reason
+    );
+
     event LockTokenUpdated(address indexed lockTokenAddress);
     event LockTokenFeeUpdated(uint256 fee);
     event TokenFeeUpdated(uint256 fee);
@@ -211,6 +220,10 @@ contract Lock is Ownable {
         return _wallet;
     }
 
+    function getTokensLocked(address token) external view returns(address) {
+        return _lockedTokenAmount[token];
+    }
+
     /**
     * @dev Returns lock token address
     */
@@ -293,7 +306,7 @@ contract Lock is Ownable {
 
         //This loop can be very costly if there are very large number of airdrops for a token.
         //Which we presume will not be the case
-        for(uint256 i = 0; i < length; i++){
+        for (uint256 i = 0; i < length; i++) {
 
             Airdrop memory airdrop = _baseTokenVsAirdrops[token][i];
             destTokens[i] = airdrop.destToken;
@@ -563,7 +576,7 @@ contract Lock is Ownable {
         require(amounts.length == beneficiaries.length, "Lock: Invalid input");
        
 
-        for(uint256 i = 0; i < amounts.length; i++){
+        for (uint256 i = 0; i < amounts.length; i++) {
             remValue = _lock(
                 tokenAddress,
                 amounts[i],
@@ -596,15 +609,17 @@ contract Lock is Ownable {
 
         uint256 amount = 0;
         if (ETH_ADDRESS == lockedAsset.token) {
-            amount =_claimETH(
-                        id
-                    );
+            amount = claimETH(
+                id
+            );
         }
         else {
             amount = _claimERC20(
-                        id
-                    );
+                id
+            );
         }
+
+        _lockedTokenAmount[lockedAsset.token] = _lockedTokenAmount[lockedAsset.token].sub(amount);
 
         emit AssetClaimed(
             id,
@@ -665,6 +680,8 @@ contract Lock is Ownable {
         uint256 newAmount = 0;
 
         (fee, newAmount) = _calculateFee(amount, lockFee);
+
+        _lockedTokenAmount[tokenAddress] = _lockedTokenAmount[tokenAddress].add(newAmount);
 
         uint256 remValue = value;
 
@@ -907,17 +924,64 @@ contract Lock is Ownable {
     {
         //This loop can be very costly if number of airdropped tokens
         //for base token is very large. But we assume that it is not going to be the case
-        for(uint256 i = 0; i < _baseTokenVsAirdrops[baseToken].length; i++) {
+        for (uint256 i = 0; i < _baseTokenVsAirdrops[baseToken].length; i++) {
 
             Airdrop memory airdrop = _baseTokenVsAirdrops[baseToken][i];
 
-            if(airdrop.date > lastLocked && airdrop.date < block.timestamp) {
+            if (airdrop.date > lastLocked && airdrop.date < block.timestamp) {
                 uint256 airdropAmount = amount.mul(airdrop.numerator).div(airdrop.denominator);
-                IERC20(airdrop.destToken).safeTransfer(msg.sender, airdropAmount);
-                emit TokensAirdropped(airdrop.destToken, airdropAmount);
+                uint256 tokenBalance = getTokenBalance(airdrop.destToken, address(this));
+                if (
+                    _lockedTokenAmount.add(airdropAmount) <= tokenBalance
+                ) {
+                    transferTokens(airdrop.destToken, msg.sender, airdropAmount);
+                    emit TokensAirdropped(airdrop.destToken, airdropAmount);
+                }
+                else {
+                    emit TokensAirdroppedFailed(
+                        airdrop.destToken,
+                        airdropAmount,
+                        msg.sender,
+                        "Trying to airdrop more tokens then available in the contract"
+                    );
+                }
             }
         }
 
+    }
+
+    function getTokenBalance(
+        address token,
+        address account
+    )
+        private
+        view
+        returns(uint256)
+    {
+        if (ETH_ADDRESS == token) {
+            return account.balance;
+        }
+        else {
+            return IERC20(token).balanceOf(account);
+        }
+    }
+
+    function transferTokens(
+        address token,
+        address payable account,
+        uint256 amount
+    )
+        private
+    {
+        if (amount > 0) {
+            if (token == ETH_ADDRESS) {
+                (bool result, ) = account.call{value: amount}("");
+                require(result, "Failed to transfer Ether");
+            }
+            else {
+                IERC20(token).safeTransfer(account, amount);
+            }
+        }
     }
 
     //Helper method to calculate fee
