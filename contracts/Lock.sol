@@ -220,7 +220,7 @@ contract Lock is Ownable {
         return _wallet;
     }
 
-    function getTokensLocked(address token) external view returns(address) {
+    function getTokensLocked(address token) external view returns(uint256) {
         return _lockedTokenAmount[token];
     }
 
@@ -609,7 +609,7 @@ contract Lock is Ownable {
 
         uint256 amount = 0;
         if (ETH_ADDRESS == lockedAsset.token) {
-            amount = claimETH(
+            amount = _claimETH(
                 id
             );
         }
@@ -932,7 +932,7 @@ contract Lock is Ownable {
                 uint256 airdropAmount = amount.mul(airdrop.numerator).div(airdrop.denominator);
                 uint256 tokenBalance = getTokenBalance(airdrop.destToken, address(this));
                 if (
-                    _lockedTokenAmount.add(airdropAmount) <= tokenBalance
+                    _lockedTokenAmount[airdrop.destToken].add(airdropAmount) <= tokenBalance
                 ) {
                     transferTokens(airdrop.destToken, msg.sender, airdropAmount);
                     emit TokensAirdropped(airdrop.destToken, airdropAmount);
@@ -975,7 +975,7 @@ contract Lock is Ownable {
     {
         if (amount > 0) {
             if (token == ETH_ADDRESS) {
-                (bool result, ) = account.call{value: amount}("");
+                (bool result, ) = account.call.value(amount)("");
                 require(result, "Failed to transfer Ether");
             }
             else {
