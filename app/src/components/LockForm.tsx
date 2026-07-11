@@ -27,6 +27,8 @@ export function LockForm({ onLocked }: { onLocked: () => void }) {
   const [cliffAt, setCliffAt] = useState(defaultUnlockInput(90));
   const [endAt, setEndAt] = useState(defaultUnlockInput(365));
   const [beneficiary, setBeneficiary] = useState("");
+  const [nonTransferable, setNonTransferable] = useState(false);
+  const [payoutTo, setPayoutTo] = useState("");
 
   const token: Address | undefined = useEth
     ? NATIVE_TOKEN
@@ -115,33 +117,56 @@ export function LockForm({ onLocked }: { onLocked: () => void }) {
     return start <= cliff && cliff <= end && end > now ? { start, cliff, end } : undefined;
   }, [mode, unlockAt, cliffAt, endAt]);
 
+  const payoutValid = payoutTo === "" || isAddress(payoutTo);
+  const wantsProtection = nonTransferable || (payoutTo !== "" && isAddress(payoutTo));
+
   const ready =
-    !!vault && !!token && !!parsedAmount && !!receiver && !!schedule && !needsApproval;
+    !!vault &&
+    !!token &&
+    !!parsedAmount &&
+    !!receiver &&
+    !!schedule &&
+    !needsApproval &&
+    payoutValid;
 
   function submit() {
     if (!vault || !token || !parsedAmount || !receiver || !schedule) return;
-    if (mode === "timelock") {
+    const value = useEth ? parsedAmount : 0n;
+
+    if (wantsProtection) {
+      writeLock({
+        address: vault,
+        abi: lockVaultAbi,
+        functionName: "lockProtected",
+        args: [
+          {
+            token,
+            amount: parsedAmount,
+            start: schedule.start,
+            cliff: schedule.cliff,
+            end: schedule.end,
+            beneficiary: receiver,
+          },
+          isAddress(payoutTo) ? payoutTo : ("0x0000000000000000000000000000000000000000" as Address),
+          nonTransferable,
+        ],
+        value,
+      });
+    } else if (mode === "timelock") {
       writeLock({
         address: vault,
         abi: lockVaultAbi,
         functionName: "lock",
         args: [token, parsedAmount, schedule.end, receiver],
-        value: useEth ? parsedAmount : 0n,
+        value,
       });
     } else {
       writeLock({
         address: vault,
         abi: lockVaultAbi,
         functionName: "lockVesting",
-        args: [
-          token,
-          parsedAmount,
-          schedule.start,
-          schedule.cliff,
-          schedule.end,
-          receiver,
-        ],
-        value: useEth ? parsedAmount : 0n,
+        args: [token, parsedAmount, schedule.start, schedule.cliff, schedule.end, receiver],
+        value,
       });
     }
   }
@@ -274,7 +299,7 @@ export function LockForm({ onLocked }: { onLocked: () => void }) {
       )}
 
       {/* beneficiary */}
-      <div className="mb-6">
+      <div className="mb-4">
         <span className="label">Beneficiary (optional — defaults to you)</span>
         <input
           className="input font-mono"
@@ -282,6 +307,41 @@ export function LockForm({ onLocked }: { onLocked: () => void }) {
           value={beneficiary}
           onChange={(e) => setBeneficiary(e.target.value.trim())}
         />
+      </div>
+
+      {/* protection */}
+      <div className="mb-6 rounded-xl border border-amber-400/15 bg-amber-500/[0.04] p-4">
+        <div className="mb-3 flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-wider text-amber-300/90">
+          🛡 hodl protection <span className="font-normal normal-case text-slate-500">— one-way, can never be undone</span>
+        </div>
+        <label className="mb-3 flex cursor-pointer items-start gap-3">
+          <input
+            type="checkbox"
+            className="mt-0.5 h-4 w-4 accent-amber-400"
+            checked={nonTransferable}
+            onChange={(e) => setNonTransferable(e.target.checked)}
+          />
+          <span className="text-sm text-slate-300">
+            Non-transferable
+            <span className="block text-xs text-slate-500">
+              The position NFT can never be moved or sold — a phished wallet can&apos;t lose it.
+            </span>
+          </span>
+        </label>
+        <span className="label">Pin payout to a cold wallet (optional)</span>
+        <input
+          className="input font-mono"
+          placeholder="0x… — claims will only ever pay this address"
+          value={payoutTo}
+          onChange={(e) => setPayoutTo(e.target.value.trim())}
+        />
+        {!payoutValid && <div className="mt-1.5 text-xs text-rose-400">Not a valid address</div>}
+        {wantsProtection && (
+          <div className="mt-2 text-xs text-amber-300/80">
+            ⚠ Protection is permanent. Double-check the payout address — not even you can
+            change it later.
+          </div>
+        )}
       </div>
 
       {/* actions */}

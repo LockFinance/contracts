@@ -12,13 +12,15 @@ export function Header() {
     <header className="sticky top-0 z-20 border-b border-white/5 bg-slate-950/70 backdrop-blur-md">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 sm:px-6">
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-lg shadow-lg shadow-indigo-500/30">
-            🔒
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-indigo-400/40 bg-indigo-500/10 font-mono text-sm font-bold text-indigo-300 shadow-lg shadow-indigo-500/20">
+            &gt;_
           </div>
-          <div>
-            <div className="text-sm font-bold tracking-tight">Lock Finance</div>
-            <div className="text-[10px] uppercase tracking-widest text-slate-500">
-              v2 · permissionless
+          <div className="font-mono">
+            <div className="text-sm font-bold tracking-tight">
+              lock<span className="text-indigo-400">.finance</span>
+            </div>
+            <div className="text-[10px] uppercase tracking-[0.25em] text-slate-500">
+              v2 // permissionless
             </div>
           </div>
         </div>

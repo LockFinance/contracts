@@ -192,6 +192,11 @@ export const lockVaultAbi = [
   },
   {
     "inputs": [],
+    "name": "InvalidProtection",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "InvalidSchedule",
     "type": "error"
   },
@@ -230,6 +235,11 @@ export const lockVaultAbi = [
       }
     ],
     "name": "OwnableUnauthorizedAccount",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "PositionIsProtected",
     "type": "error"
   },
   {
@@ -538,6 +548,31 @@ export const lockVaultAbi = [
         "type": "uint256"
       },
       {
+        "indexed": false,
+        "internalType": "address",
+        "name": "payoutTo",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "bool",
+        "name": "nonTransferable",
+        "type": "bool"
+      }
+    ],
+    "name": "Protected",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "id",
+        "type": "uint256"
+      },
+      {
         "indexed": true,
         "internalType": "uint256",
         "name": "newId",
@@ -820,6 +855,19 @@ export const lockVaultAbi = [
     "type": "function"
   },
   {
+    "inputs": [],
+    "name": "contractURI",
+    "outputs": [
+      {
+        "internalType": "string",
+        "name": "",
+        "type": "string"
+      }
+    ],
+    "stateMutability": "pure",
+    "type": "function"
+  },
+  {
     "inputs": [
       {
         "internalType": "uint256",
@@ -920,6 +968,11 @@ export const lockVaultAbi = [
             "type": "uint128"
           },
           {
+            "internalType": "bool",
+            "name": "nonTransferable",
+            "type": "bool"
+          },
+          {
             "internalType": "uint128",
             "name": "claimed",
             "type": "uint128"
@@ -981,6 +1034,67 @@ export const lockVaultAbi = [
       }
     ],
     "name": "lock",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "id",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "token",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amount",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint48",
+            "name": "start",
+            "type": "uint48"
+          },
+          {
+            "internalType": "uint48",
+            "name": "cliff",
+            "type": "uint48"
+          },
+          {
+            "internalType": "uint48",
+            "name": "end",
+            "type": "uint48"
+          },
+          {
+            "internalType": "address",
+            "name": "beneficiary",
+            "type": "address"
+          }
+        ],
+        "internalType": "struct LockVault.LockParams",
+        "name": "params",
+        "type": "tuple"
+      },
+      {
+        "internalType": "address",
+        "name": "payoutTo",
+        "type": "address"
+      },
+      {
+        "internalType": "bool",
+        "name": "nonTransferable",
+        "type": "bool"
+      }
+    ],
+    "name": "lockProtected",
     "outputs": [
       {
         "internalType": "uint256",
@@ -1209,6 +1323,25 @@ export const lockVaultAbi = [
     "type": "function"
   },
   {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "id",
+        "type": "uint256"
+      }
+    ],
+    "name": "payoutOf",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
     "inputs": [],
     "name": "pendingOwner",
     "outputs": [
@@ -1238,6 +1371,29 @@ export const lockVaultAbi = [
       }
     ],
     "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "id",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "payoutTo",
+        "type": "address"
+      },
+      {
+        "internalType": "bool",
+        "name": "nonTransferable",
+        "type": "bool"
+      }
+    ],
+    "name": "protect",
+    "outputs": [],
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {

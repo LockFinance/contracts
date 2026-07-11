@@ -31,6 +31,12 @@ export function PositionCard({
     functionName: "claimable",
     args: [id],
   });
+  const { data: pinnedPayout } = useReadContract({
+    address: vault,
+    abi: lockVaultAbi,
+    functionName: "payoutOf",
+    args: [id],
+  });
 
   const isEth = p?.token === NATIVE_TOKEN;
   const { data: symbol } = useReadContract({
@@ -94,17 +100,24 @@ export function PositionCard({
             Lock #{id.toString()} {!isEth && `· ${shortAddress(p.token)}`}
           </div>
         </div>
-        <span
-          className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider ${
-            view.unlocked
-              ? "bg-emerald-500/15 text-emerald-300"
-              : view.isVesting
-                ? "bg-violet-500/15 text-violet-300"
-                : "bg-indigo-500/15 text-indigo-300"
-          }`}
-        >
-          {view.unlocked ? "Unlocked" : view.isVesting ? "Vesting" : "Locked"}
-        </span>
+        <div className="flex flex-col items-end gap-1.5">
+          <span
+            className={`rounded-md px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider ${
+              view.unlocked
+                ? "bg-emerald-500/15 text-emerald-300"
+                : view.isVesting
+                  ? "bg-violet-500/15 text-violet-300"
+                  : "bg-indigo-500/15 text-indigo-300"
+            }`}
+          >
+            {view.unlocked ? "Unlocked" : view.isVesting ? "Vesting" : "Locked"}
+          </span>
+          {(p.nonTransferable || (pinnedPayout && pinnedPayout !== "0x0000000000000000000000000000000000000000")) && (
+            <span className="rounded-md bg-amber-500/15 px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-amber-300">
+              🛡 Protected
+            </span>
+          )}
+        </div>
       </div>
 
       {/* progress */}
@@ -126,6 +139,11 @@ export function PositionCard({
       {p.claimed > 0n && (
         <div className="mb-3 text-xs text-slate-400">
           Already claimed: {formatAmount(p.claimed, view.dec)} {view.sym}
+        </div>
+      )}
+      {pinnedPayout && pinnedPayout !== "0x0000000000000000000000000000000000000000" && (
+        <div className="mb-3 font-mono text-xs text-amber-300/80">
+          pays out only to {shortAddress(pinnedPayout)}
         </div>
       )}
 

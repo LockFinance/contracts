@@ -25,9 +25,9 @@ const REASONS = [
     body: "Linear vesting with optional cliffs for team allocations, investor schedules, and grants. Claim as you vest — partial claims cost one small transaction.",
   },
   {
-    icon: "🔓",
-    title: "Permissionless from day one",
-    body: "No token allowlist, no listing process, no gatekeepers. If it's an ERC-20 (or plain ETH), you can lock it right now.",
+    icon: "🛡️",
+    title: "Protection from a stolen key",
+    body: "Opt-in, one-way protections: make a position non-transferable, or pin its payout to a cold wallet forever. A phished or coerced hot wallet can claim your funds — but only into your own vault.",
   },
 ];
 
