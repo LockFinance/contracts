@@ -44,12 +44,13 @@ contract LockVault is ERC721Enumerable, Ownable2Step, ReentrancyGuard, Pausable,
     ///         nothing is claimable before `cliff`. A pure time-lock has
     ///         `start == cliff == end`.
     struct Position {
-        address token; //   token locked, address(0) for native ETH
-        uint48 start; //    vesting starts (== end for a pure time-lock)
-        uint48 cliff; //    nothing claimable before this timestamp
-        uint48 end; //      fully vested / unlocked at this timestamp
-        uint128 amount; //  total amount locked (net of protocol fee)
-        uint128 claimed; // amount already claimed
+        address token; //          token locked, address(0) for native ETH
+        uint48 start; //           vesting starts (== end for a pure time-lock)
+        uint48 cliff; //           nothing claimable before this timestamp
+        uint48 end; //             fully vested / unlocked at this timestamp
+        uint128 amount; //         total amount locked (net of protocol fee)
+        bool nonTransferable; //   one-way transfer lock (see protect())
+        uint128 claimed; //        amount already claimed
     }
 
     struct LockParams {
@@ -94,6 +95,10 @@ contract LockVault is ERC721Enumerable, Ownable2Step, ReentrancyGuard, Pausable,
     ///         Anything above this is surplus and can be swept.
     mapping(address token => uint256) public totalLocked;
 
+    /// @notice Optional fixed payout address per position (see protect()).
+    ///         When set, claims pay this address instead of the NFT owner.
+    mapping(uint256 id => address) public payoutOf;
+
     // ---------------------------------------------------------------------
     // Events
     // ---------------------------------------------------------------------
@@ -113,6 +118,7 @@ contract LockVault is ERC721Enumerable, Ownable2Step, ReentrancyGuard, Pausable,
     event ToppedUp(uint256 indexed id, address indexed funder, uint256 amount, uint256 fee);
     event Extended(uint256 indexed id, uint48 oldEnd, uint48 newEnd);
     event Split(uint256 indexed id, uint256 indexed newId, uint256 amountMoved);
+    event Protected(uint256 indexed id, address payoutTo, bool nonTransferable);
     event FeeUpdated(uint256 feeBps);
     event FeeRecipientUpdated(address feeRecipient);
     event Swept(address indexed token, address indexed to, uint256 amount);
@@ -133,6 +139,8 @@ contract LockVault is ERC721Enumerable, Ownable2Step, ReentrancyGuard, Pausable,
     error EthTransferFailed();
     error AmountTooLarge();
     error SplitAmountInvalid();
+    error PositionIsProtected();
+    error InvalidProtection();
 
     // ---------------------------------------------------------------------
     // Constructor
@@ -207,6 +215,22 @@ contract LockVault is ERC721Enumerable, Ownable2Step, ReentrancyGuard, Pausable,
         if (params.token == address(0)) revert ZeroAddress();
         try IERC20Permit(params.token).permit(msg.sender, address(this), permitValue, deadline, v, r, s) {} catch {}
         return _lock(params, 0);
+    }
+
+    /**
+     * @notice Lock with protection applied atomically at creation — for
+     *         long-term holders guarding against their own hot wallet.
+     *         See {protect} for the semantics of the two protections.
+     */
+    function lockProtected(LockParams calldata params, address payoutTo, bool nonTransferable)
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+        returns (uint256 id)
+    {
+        id = _lock(params, msg.value);
+        _applyProtection(id, payoutTo, nonTransferable);
     }
 
     /**
@@ -290,6 +314,9 @@ contract LockVault is ERC721Enumerable, Ownable2Step, ReentrancyGuard, Pausable,
     function split(uint256 id, uint256 amount, address to) external nonReentrant returns (uint256 newId) {
         if (_ownerOf(id) != msg.sender) revert NotPositionOwner();
         if (to == address(0)) revert ZeroAddress();
+        // Splitting a protected position would let a compromised wallet carve
+        // funds into a fresh, unprotected position — so it is disabled.
+        if (payoutOf[id] != address(0) || _positions[id].nonTransferable) revert PositionIsProtected();
         Position storage p = _positions[id];
 
         if (amount == 0 || amount >= p.amount) revert SplitAmountInvalid();
@@ -308,11 +335,31 @@ contract LockVault is ERC721Enumerable, Ownable2Step, ReentrancyGuard, Pausable,
             cliff: p.cliff,
             end: p.end,
             amount: uint128(amount),
+            nonTransferable: false,
             claimed: uint128(movedClaimed)
         });
         _safeMint(to, newId);
 
         emit Split(id, newId, amount);
+    }
+
+    /**
+     * @notice Irreversibly protect a position. Two independent protections,
+     *         at least one must be enabled:
+     *
+     *         - `payoutTo`: pin the payout address. Claims will pay this
+     *           address forever, no matter who owns or triggers the claim.
+     *           Set it to a cold wallet: a compromised hot wallet can then
+     *           only ever "steal" your funds into your own vault.
+     *         - `nonTransferable`: the NFT can never be transferred again,
+     *           so it can't be sold, phished, or moved under duress.
+     *
+     *         Protection is one-way: it can never be weakened, changed, or
+     *         removed — not by the owner, not by the protocol admin.
+     */
+    function protect(uint256 id, address payoutTo, bool nonTransferable) external {
+        if (_ownerOf(id) != msg.sender) revert NotPositionOwner();
+        _applyProtection(id, payoutTo, nonTransferable);
     }
 
     // ---------------------------------------------------------------------
@@ -321,8 +368,9 @@ contract LockVault is ERC721Enumerable, Ownable2Step, ReentrancyGuard, Pausable,
 
     /**
      * @notice Claim everything currently claimable on a position. Callable by
-     *         the position owner or an approved operator; funds always go to
-     *         the position owner.
+     *         the position owner or an approved operator; funds go to the
+     *         position owner, or to the pinned payout address if the position
+     *         was protected with one (see {protect}).
      */
     function claim(uint256 id) external nonReentrant returns (uint256 amount) {
         address positionOwner = _requireOwned(id);
@@ -339,14 +387,18 @@ contract LockVault is ERC721Enumerable, Ownable2Step, ReentrancyGuard, Pausable,
         totalLocked[p.token] -= amount;
 
         address token = p.token;
+        address payoutPinned = payoutOf[id];
+        address recipient = payoutPinned == address(0) ? positionOwner : payoutPinned;
+
         // Burn fully-claimed, fully-vested positions to keep wallets tidy.
         if (p.claimed == p.amount && block.timestamp >= p.end) {
             delete _positions[id];
+            delete payoutOf[id];
             _burn(id);
         }
 
-        _payout(token, positionOwner, amount);
-        emit Claimed(id, token, positionOwner, amount);
+        _payout(token, recipient, amount);
+        emit Claimed(id, token, recipient, amount);
     }
 
     // ---------------------------------------------------------------------
@@ -453,6 +505,8 @@ contract LockVault is ERC721Enumerable, Ownable2Step, ReentrancyGuard, Pausable,
             unlockStr,
             '},{"trait_type":"Vesting","value":"',
             p.start == p.end ? "Time-lock" : "Linear",
+            '"},{"trait_type":"Protected","value":"',
+            (p.nonTransferable || payoutOf[id] != address(0)) ? "Yes" : "No",
             '"}],"image":"data:image/svg+xml;base64,',
             Base64.encode(bytes(svg)),
             '"}'
@@ -480,6 +534,7 @@ contract LockVault is ERC721Enumerable, Ownable2Step, ReentrancyGuard, Pausable,
             cliff: params.cliff,
             end: params.end,
             amount: uint128(net),
+            nonTransferable: false,
             claimed: 0
         });
         totalLocked[params.token] += net;
@@ -520,6 +575,23 @@ contract LockVault is ERC721Enumerable, Ownable2Step, ReentrancyGuard, Pausable,
         if (fee > 0) {
             _payout(token, feeRecipient, fee);
         }
+    }
+
+    /**
+     * @dev Apply one-way protection. Reverts if the position already has any
+     *      protection (protection can only be granted once, never modified)
+     *      or if no protection was actually requested.
+     */
+    function _applyProtection(uint256 id, address payoutTo, bool nonTransferable) private {
+        if (payoutTo == address(0) && !nonTransferable) revert InvalidProtection();
+
+        Position storage p = _positions[id];
+        if (payoutOf[id] != address(0) || p.nonTransferable) revert PositionIsProtected();
+
+        if (payoutTo != address(0)) payoutOf[id] = payoutTo;
+        if (nonTransferable) p.nonTransferable = true;
+
+        emit Protected(id, payoutTo, nonTransferable);
     }
 
     function _payout(address token, address to, uint256 amount) private {
@@ -598,6 +670,33 @@ contract LockVault is ERC721Enumerable, Ownable2Step, ReentrancyGuard, Pausable,
     // ---------------------------------------------------------------------
     // ERC-165 / ERC-721 plumbing
     // ---------------------------------------------------------------------
+
+    /// @dev Enforce the one-way transfer lock. Minting (from == 0) and
+    ///      burning (to == 0) are always allowed.
+    function _update(address to, uint256 id, address auth) internal override returns (address) {
+        address from = _ownerOf(id);
+        if (from != address(0) && to != address(0) && _positions[id].nonTransferable) {
+            revert PositionIsProtected();
+        }
+        return super._update(to, id, auth);
+    }
+
+    /// @notice ERC-7572 contract-level metadata, fully on-chain — lets
+    ///         explorers, marketplaces, and agents identify the protocol
+    ///         without any off-chain dependency.
+    function contractURI() external pure returns (string memory) {
+        return string.concat(
+            "data:application/json;base64,",
+            Base64.encode(
+                bytes(
+                    '{"name":"LockVault","description":"Permissionless token locking and vesting. '
+                    'Lock any ERC-20 or native ETH as a transferable ERC-721 position with optional '
+                    'linear vesting, cliffs, and one-way self-protection. No admin can touch locked '
+                    'funds; protocol fee is hard-capped at 1%.","external_link":"https://lock.finance"}'
+                )
+            )
+        );
+    }
 
     /// @dev Reject stray ETH — deposits must go through lock/topUp. Surplus
     ///      force-sent ETH is recoverable via `sweep`.

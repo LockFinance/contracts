@@ -499,6 +499,113 @@ describe("LockVault", function () {
     });
   });
 
+  describe("protected locks", function () {
+    it("pins the payout address: claims pay the cold wallet, whoever claims", async function () {
+      const { vault, token, alice, bob, carol, id, unlockAt, net } = await loadFixture(lockedFixture);
+      // carol is the cold wallet
+      await vault.connect(alice).protect(id, carol.address, false);
+
+      // simulate compromise: NFT transferred to bob (still transferable), bob claims
+      await vault.connect(alice).transferFrom(alice.address, bob.address, id);
+      await time.increaseTo(unlockAt);
+      await expect(vault.connect(bob).claim(id))
+        .to.emit(vault, "Claimed")
+        .withArgs(id, token.target, carol.address, net);
+      expect(await token.balanceOf(carol.address)).to.equal(net);
+      expect(await token.balanceOf(bob.address)).to.equal(0n);
+    });
+
+    it("non-transferable positions cannot be moved, but claims still work", async function () {
+      const { vault, alice, bob, id, unlockAt } = await loadFixture(lockedFixture);
+      await vault.connect(alice).protect(id, ethers.ZeroAddress, true);
+
+      await expect(
+        vault.connect(alice).transferFrom(alice.address, bob.address, id)
+      ).to.be.revertedWithCustomError(vault, "PositionIsProtected");
+
+      await time.increaseTo(unlockAt);
+      await vault.connect(alice).claim(id); // burn path still allowed
+    });
+
+    it("protection is one-way and cannot be re-applied or altered", async function () {
+      const { vault, alice, bob, carol, id } = await loadFixture(lockedFixture);
+      await vault.connect(alice).protect(id, carol.address, false);
+      await expect(vault.connect(alice).protect(id, bob.address, false))
+        .to.be.revertedWithCustomError(vault, "PositionIsProtected");
+      await expect(vault.connect(alice).protect(id, ethers.ZeroAddress, true))
+        .to.be.revertedWithCustomError(vault, "PositionIsProtected");
+    });
+
+    it("requires at least one protection and position ownership", async function () {
+      const { vault, alice, bob, id } = await loadFixture(lockedFixture);
+      await expect(vault.connect(alice).protect(id, ethers.ZeroAddress, false))
+        .to.be.revertedWithCustomError(vault, "InvalidProtection");
+      await expect(vault.connect(bob).protect(id, bob.address, false))
+        .to.be.revertedWithCustomError(vault, "NotPositionOwner");
+    });
+
+    it("blocks split on protected positions", async function () {
+      const { vault, alice, bob, carol, id, net } = await loadFixture(lockedFixture);
+      await vault.connect(alice).protect(id, carol.address, false);
+      await expect(vault.connect(alice).split(id, net / 2n, bob.address))
+        .to.be.revertedWithCustomError(vault, "PositionIsProtected");
+    });
+
+    it("lockProtected applies protection atomically at creation", async function () {
+      const { vault, token, alice, bob, carol } = await loadFixture(deployFixture);
+      const now = await time.latest();
+      const amount = ethers.parseEther("100");
+      const params = {
+        token: token.target,
+        amount,
+        start: now + DAY,
+        cliff: now + DAY,
+        end: now + DAY,
+        beneficiary: bob.address,
+      };
+
+      await expect(vault.connect(alice).lockProtected(params, carol.address, true))
+        .to.emit(vault, "Protected")
+        .withArgs(1n, carol.address, true);
+
+      expect(await vault.payoutOf(1)).to.equal(carol.address);
+      expect((await vault.getPosition(1)).nonTransferable).to.equal(true);
+      await expect(
+        vault.connect(bob).transferFrom(bob.address, alice.address, 1)
+      ).to.be.revertedWithCustomError(vault, "PositionIsProtected");
+    });
+
+    it("works for native ETH with a pinned cold wallet", async function () {
+      const { vault, alice, carol } = await loadFixture(deployFixture);
+      const now = await time.latest();
+      const amount = ethers.parseEther("2");
+      await vault.connect(alice).lockProtected(
+        {
+          token: ETH,
+          amount,
+          start: now + DAY,
+          cliff: now + DAY,
+          end: now + DAY,
+          beneficiary: alice.address,
+        },
+        carol.address,
+        true,
+        { value: amount }
+      );
+      await time.increase(DAY + 1);
+      const net = (amount * 9950n) / 10000n;
+      await expect(vault.connect(alice).claim(1)).to.changeEtherBalance(carol, net);
+    });
+
+    it("clears the pinned payout when the position burns, before id reuse is possible", async function () {
+      const { vault, alice, carol, id, unlockAt } = await loadFixture(lockedFixture);
+      await vault.connect(alice).protect(id, carol.address, false);
+      await time.increaseTo(unlockAt);
+      await vault.connect(alice).claim(id);
+      expect(await vault.payoutOf(id)).to.equal(ethers.ZeroAddress);
+    });
+  });
+
   describe("views and metadata", function () {
     it("enumerates positions per owner", async function () {
       const { vault, token, alice, bob } = await loadFixture(deployFixture);
