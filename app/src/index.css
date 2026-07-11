@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-slate-950 text-slate-100 antialiased;
+  background-image:
+    radial-gradient(60rem 40rem at 85% -10%, rgb(99 102 241 / 0.14), transparent 60%),
+    radial-gradient(50rem 35rem at -10% 25%, rgb(139 92 246 / 0.1), transparent 60%);
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+.card {
+  @apply rounded-2xl border border-white/10 bg-white/[0.04] backdrop-blur-sm;
+}
+
+.input {
+  @apply w-full rounded-xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm
+    text-slate-100 placeholder-slate-500 outline-none transition
+    focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-500/20;
+}
+
+.btn-primary {
+  @apply inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r
+    from-indigo-500 to-violet-500 px-5 py-3 text-sm font-semibold text-white
+    shadow-lg shadow-indigo-500/25 transition hover:from-indigo-400 hover:to-violet-400
+    disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none;
+}
+
+.btn-ghost {
+  @apply inline-flex items-center justify-center gap-2 rounded-xl border border-white/10
+    bg-white/5 px-4 py-2 text-sm font-medium text-slate-200 transition
+    hover:border-white/20 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40;
+}
+
+.label {
+  @apply mb-1.5 block text-xs font-medium uppercase tracking-wider text-slate-400;
+}
