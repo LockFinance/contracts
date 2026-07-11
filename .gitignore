@@ -4,6 +4,12 @@ coverage.json
 .env
 build/
 flattened_contracts/
+# Hardhat
+artifacts/
+cache/
+typechain-types/
+# Frontend
+app/dist/
 # IDEs and editors
 /.idea
 .project
