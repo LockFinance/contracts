@@ -35,6 +35,26 @@ Both 2020 audit reports are archived in [audits/](audits/).
 | No cap on lock duration/date | Note | **Fixed.** `end ≤ now + 100 years` (`DurationTooLong`) on lock and extend |
 | `transfer()` for ETH sends (pre-Istanbul gas assumptions) | Minor (fixed in v1) | v2 uses `call{value:}` with success checks throughout |
 
+## Self-protection (opt-in, one-way)
+
+`protect(id, payoutTo, nonTransferable)` / `lockProtected(...)` let a holder
+irreversibly constrain their *own* position:
+
+- **Pinned payout** (`payoutTo`): claims pay a fixed address forever — set it
+  to a cold wallet and a compromised hot wallet can only move funds *there*.
+- **Non-transferable**: the position NFT can never be transferred, sold, or
+  phished (enforced in `_update`; mint and burn still work).
+
+Design consequences, deliberately accepted:
+
+- Protection can never be weakened — not by the owner, not by the admin. A
+  wrong `payoutTo` is a permanent mistake; the UI and docs warn loudly.
+- `split` reverts on protected positions: otherwise a compromised wallet
+  could carve funds into a fresh, unprotected position.
+- `extend` remains allowed for the owner; a thief could extend a victim's
+  lock (griefing, no theft). Funds still arrive at the pinned payout.
+- The pinned payout mapping is deleted when the position burns.
+
 ## Additional v2 hardening
 
 - **Reentrancy**: `nonReentrant` on every state-changing entry point +

@@ -55,6 +55,31 @@ Vesting: `lockVesting(token, amount, start, cliff, end, beneficiary)` — amount
 vest linearly from `start` to `end`, nothing claimable before `cliff`. A pure
 time-lock is the degenerate case `start == cliff == end`.
 
+## Protection (one-way) — for long-term holders
+
+```solidity
+// At creation:
+vault.lockProtected(params, coldWallet, /*nonTransferable=*/ true);
+// Or later, by the position owner:
+vault.protect(id, coldWallet, true);
+```
+
+- `payoutTo != 0`: every future claim pays `payoutTo`, regardless of who owns
+  or triggers the claim. A compromised hot wallet can only "steal" funds into
+  the user's own cold wallet.
+- `nonTransferable = true`: the NFT can never be transferred again (mint/burn
+  still work), so it cannot be sold, phished, or moved under duress.
+- Protection is **permanent**: it cannot be modified or removed by anyone,
+  including the protocol owner. `split` is disabled on protected positions
+  (it would allow carving funds into a fresh unprotected position).
+- **Always confirm the payout address with your user before protecting.**
+
+## Discoverability
+
+- `contractURI()` returns ERC-7572 contract metadata, fully on-chain.
+- The web app serves `/llms.txt` and the ABI at `/abi/lockVault.json`.
+- `AGENTS.md` at the repository root is the quick orientation file.
+
 ## viem example (TypeScript)
 
 ```ts
@@ -99,7 +124,9 @@ const ids = await client.readContract({
 - **Errors to handle**: `ZeroAmount`, `ZeroAddress`, `InvalidSchedule`,
   `DurationTooLong` (end > now + 100 years), `FeeTooHigh`, `WrongMsgValue`,
   `NothingToClaim`, `NotPositionOwner`, `AmountTooLarge` (position amounts are
-  uint128), `SplitAmountInvalid`, `EnforcedPause` (deposits only).
+  uint128), `SplitAmountInvalid`, `EnforcedPause` (deposits only),
+  `PositionIsProtected` (transfer/split/re-protect of a protected position),
+  `InvalidProtection` (protect() with nothing enabled).
 
 ## Events for indexing
 
@@ -110,6 +137,7 @@ event Claimed(uint256 indexed id, address indexed token, address indexed benefic
 event ToppedUp(uint256 indexed id, address indexed funder, uint256 amount, uint256 fee);
 event Extended(uint256 indexed id, uint48 oldEnd, uint48 newEnd);
 event Split(uint256 indexed id, uint256 indexed newId, uint256 amountMoved);
+event Protected(uint256 indexed id, address payoutTo, bool nonTransferable);
 ```
 
 Plus standard ERC-721 `Transfer` events for position ownership. A full holder

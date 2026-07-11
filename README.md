@@ -45,6 +45,8 @@ have to write, review, or trust:
 | `lockVesting(token, amount, start, cliff, end, beneficiary)` | Linear vesting with optional cliff |
 | `lockWithPermit(params, value, deadline, v, r, s)` | Approve + lock in one transaction (EIP-2612) |
 | `batchLock(params[])` | Many locks in one transaction (ETH + ERC-20 mixed) |
+| `lockProtected(params, payoutTo, nonTransferable)` | Lock with one-way self-protection applied atomically |
+| `protect(id, payoutTo, nonTransferable)` | Irreversibly pin payouts to a cold wallet and/or freeze transfers |
 | `claim(id)` | Claim everything vested; burns the NFT when empty & expired |
 | `topUp(id, amount)` | Anyone can add funds to an existing position |
 | `extend(id, newEnd)` | Owner pushes the unlock further out (never earlier) |
@@ -52,9 +54,24 @@ have to write, review, or trust:
 | `claimable(id)` / `vestedAmount(id, t)` / `getPosition(id)` / `positionsOf(owner)` | Views |
 | `sweep(token)` | Send *surplus only* (mistaken transfers) to the fee recipient |
 
-Native ETH is `address(0)`. Deposits take the protocol fee out of the deposited
-amount; the position records the net. `msg.value` must match exactly — no
-stranded ETH.
+Native ETH is `address(0)`. `msg.value` must match exactly — no stranded ETH.
+
+### Fees
+
+One simple model: `feeBps` (basis points, **hard-capped on-chain at 100 = 1%**)
+is deducted from each deposit and sent immediately to `feeRecipient`; the
+position records the net amount. Claims, transfers, extends, and splits are
+free (gas only). There is no fee token, no discount tier, and fee changes never
+apply retroactively — a lock keeps the deal it was created under.
+
+### Holding for the long term
+
+For multi-year holds, apply **one-way protection** (`protect` /
+`lockProtected`): pin claims to a cold-wallet payout address and/or make the
+position non-transferable. After that, a phished or coerced hot wallet cannot
+sell the position or redirect the funds — worst case, an attacker claims your
+tokens **into your own cold wallet**. Protection is permanent by design; see
+[docs/trust-model.md](docs/trust-model.md).
 
 ## Development
 
